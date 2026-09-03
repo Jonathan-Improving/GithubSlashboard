@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" font-family="sans-serif" font-size="13">
+  <style>
+    .panel { fill: #f4f4f5; stroke: #b0b0b8; }
+    .box   { fill: #ffffff; stroke: #4a4a55; stroke-width: 1.5; }
+    .ext   { fill: #e6eef7; stroke: #4a6fa5; stroke-width: 1.5; }
+    .store { fill: #eef7ee; stroke: #4a8a5a; stroke-width: 1.5; }
+    .out   { fill: #f7f2e6; stroke: #a5894a; stroke-width: 1.5; }
+    .lbl   { fill: #1a1a1a; }
+    .sub   { fill: #55555f; font-size: 11px; }
+    .edge  { stroke: #6a6a75; stroke-width: 1.5; fill: none; }
+    .edgelbl { fill: #55555f; font-size: 10px; }
+    @media (prefers-color-scheme: dark) {
+      .panel { fill: #26262b; stroke: #55555f; }
+      .box   { fill: #33333a; stroke: #c8c8d0; }
+      .ext   { fill: #2b3a4d; stroke: #8fb4e0; }
+      .store { fill: #2b3d2f; stroke: #8fca9a; }
+      .out   { fill: #3d3626; stroke: #cdb277; }
+      .lbl   { fill: #f2f2f4; }
+      .sub   { fill: #b0b0b8; }
+      .edge  { stroke: #9a9aa5; }
+      .edgelbl { fill: #b0b0b8; }
+    }
+  </style>
+
+  <rect class="panel" x="4" y="4" width="892" height="462" rx="8"/>
+
+  <!-- GitHub (external) -->
+  <rect class="ext" x="30" y="200" width="130" height="60" rx="6"/>
+  <text class="lbl" x="95" y="226" text-anchor="middle">GitHub</text>
+  <text class="sub" x="95" y="244" text-anchor="middle">read-only API</text>
+
+  <!-- Scheduler (external) -->
+  <rect class="ext" x="30" y="40" width="130" height="60" rx="6"/>
+  <text class="lbl" x="95" y="66" text-anchor="middle">Scheduler</text>
+  <text class="sub" x="95" y="84" text-anchor="middle">launchd / cron</text>
+
+  <!-- acquire -->
+  <rect class="box" x="210" y="195" width="150" height="70" rx="6"/>
+  <text class="lbl" x="285" y="220" text-anchor="middle">Acquisition</text>
+  <text class="sub" x="285" y="238" text-anchor="middle">fetch PRs + issues</text>
+  <text class="sub" x="285" y="252" text-anchor="middle">build event trail</text>
+
+  <!-- classify -->
+  <rect class="box" x="410" y="180" width="170" height="100" rx="6"/>
+  <text class="lbl" x="495" y="204" text-anchor="middle">Classification</text>
+  <text class="sub" x="495" y="222" text-anchor="middle">deterministic floors</text>
+  <text class="sub" x="495" y="236" text-anchor="middle">(merged / closed)</text>
+  <text class="sub" x="495" y="252" text-anchor="middle">+ trail-based</text>
+  <text class="sub" x="495" y="266" text-anchor="middle">judgment</text>
+
+  <!-- provider (external LLM harness) -->
+  <rect class="ext" x="410" y="40" width="170" height="70" rx="6"/>
+  <text class="lbl" x="495" y="64" text-anchor="middle">Provider</text>
+  <text class="sub" x="495" y="82" text-anchor="middle">LLM (session or one-shot)</text>
+  <text class="sub" x="495" y="96" text-anchor="middle">(Kiro CLI · pluggable)</text>
+
+  <!-- YAML store -->
+  <rect class="store" x="630" y="195" width="140" height="70" rx="6"/>
+  <text class="lbl" x="700" y="220" text-anchor="middle">YAML store</text>
+  <text class="sub" x="700" y="238" text-anchor="middle">source of truth</text>
+  <text class="sub" x="700" y="252" text-anchor="middle">!pr · !issue docs</text>
+
+  <!-- renderer -->
+  <rect class="box" x="630" y="330" width="140" height="60" rx="6"/>
+  <text class="lbl" x="700" y="356" text-anchor="middle">Renderer</text>
+  <text class="sub" x="700" y="374" text-anchor="middle">pure sink</text>
+
+  <!-- markdown out -->
+  <rect class="out" x="810" y="330" width="80" height="60" rx="6"/>
+  <text class="lbl" x="850" y="352" text-anchor="middle">.md</text>
+  <text class="sub" x="850" y="370" text-anchor="middle">status doc</text>
+
+  <!-- edges -->
+  <!-- scheduler -> acquisition -->
+  <path class="edge" d="M160 70 H285 V195" marker-end="url(#a)"/>
+  <text class="edgelbl" x="200" y="62">triggers</text>
+  <!-- github -> acquisition -->
+  <path class="edge" d="M160 230 H210" marker-end="url(#a)"/>
+  <!-- acquisition -> classification -->
+  <path class="edge" d="M360 230 H410" marker-end="url(#a)"/>
+  <!-- classification <-> provider -->
+  <path class="edge" d="M495 180 V110" marker-end="url(#a)"/>
+  <text class="edgelbl" x="502" y="150">event trail</text>
+  <path class="edge" d="M525 110 V180" marker-end="url(#a)"/>
+  <text class="edgelbl" x="532" y="150">status JSON</text>
+  <!-- classification -> store -->
+  <path class="edge" d="M580 230 H630" marker-end="url(#a)"/>
+  <!-- store -> renderer -->
+  <path class="edge" d="M700 265 V330" marker-end="url(#a)"/>
+  <text class="edgelbl" x="707" y="300">read</text>
+  <!-- renderer -> markdown -->
+  <path class="edge" d="M770 360 H810" marker-end="url(#a)"/>
+
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#6a6a75"/>
+    </marker>
+  </defs>
+</svg>

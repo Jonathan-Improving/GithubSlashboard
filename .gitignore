@@ -1,0 +1,40 @@
+# --- Go ---
+# Test binary, built with `go test -c`
+*.test
+# Output of `go tool cover`
+*.out
+coverage.*
+# Built binaries (single-binary deliverable; build locally, don't commit)
+/githubslashboard
+/bin/
+/dist/
+# Go workspace file
+go.work
+go.work.sum
+# Dependency vendoring (using go modules; uncomment if vendoring)
+# /vendor/
+
+# --- Secrets & local config ---
+# GitHub token / provider config supplied via environment or local files
+.env
+.env.*
+*.local.yaml
+*.local.yml
+config.local.*
+
+# --- Local runtime artifacts ---
+# The YAML source of truth and rendered Markdown are user data, not repo content
+*.pr.yaml
+*.pr.yml
+/data/
+/out/
+
+# --- Editor / OS ---
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# --- SDD workflow artifact (commit message draft; never committed) ---
+git.commit.txt
