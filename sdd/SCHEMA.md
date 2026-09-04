@@ -33,20 +33,30 @@ The finite set of actions a live PR may be waiting on.
 | `blocked_external` | Waiting on something outside this PR (another PR, a decision). |
 | `merge_ready` | Approved and mergeable; awaiting merge. |
 | `conflicted` | The PR conflicts with its base branch and the author must resolve it. |
+| `merge_blocked` | GitHub reports the PR as blocked from merging by an unmet branch-protection requirement (a required review, check, or signature) — distinct from a conflict. |
 | `review_feedback` | Reviewers left line comments the author has not yet resolved. |
 
 Unlike every other `action` — which the provider *infers* from the event trail —
-`conflicted` and `review_feedback` are assigned **deterministically** from hard
-GitHub facts, not from the trail, and only for `role: submitter` PRs (neither a
-conflict nor unresolved feedback on a PR the operator merely reviews is theirs to
-resolve). Neither is a value the provider may return; the classifier applies them
-in code. `review_feedback` comes from the PR's review-thread resolution state —
+`conflicted`, `merge_blocked`, and `review_feedback` are assigned
+**deterministically** from hard GitHub facts, not from the trail, and only for
+`role: submitter` PRs (neither a conflict, a merge block, nor unresolved feedback
+on a PR the operator merely reviews is theirs to resolve). None is a value the
+provider may return; the classifier applies them in code. `review_feedback` comes
+from the PR's review-thread resolution state —
 the count of threads that are unresolved and not outdated — and matters because
 an approval can coexist with still-open comments: the model reads that as
 "conditionally approved", which wrongly implies the ball is elsewhere when it is
-with the author. When both hold, `conflicted` wins, being the harder blocker.
+with the author. `merge_blocked` comes from GitHub's own `mergeable_state`
+computation (`blocked`), fetched on the same call that already provides
+mergeability — GitHub does not detail *why* it is blocked in that response, and
+the branch-protection endpoint that would is frequently unavailable to a
+read-only token on a repository the operator does not administer (ISSUES § C), so
+the row states the fact without guessing a cause. `dirty` (conflict) and
+`blocked` are mutually exclusive states GitHub reports, so `conflicted` and
+`merge_blocked` are never both true from the same data — but if a future GitHub
+change ever made that possible, `conflicted` wins, being the harder blocker.
 Neither override applies to the `stale` bucket or the merged/closed floors.
-See TDD 4.7 (conflicted) and TDD 4.9 (review feedback).
+See TDD 4.7 (conflicted), TDD 4.7a (merge blocked), and TDD 4.9 (review feedback).
 
 A **failing build is deliberately not in this enum.** It is an equally hard
 GitHub fact, but `action` holds one value while CI state and review state are

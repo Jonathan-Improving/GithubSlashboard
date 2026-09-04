@@ -64,6 +64,15 @@ type PR struct {
 	// deterministic conflicted action for submitter PRs. Not persisted.
 	Mergeable *bool `yaml:"-" json:"-"`
 
+	// MergeableState carries GitHub's own mergeable_state computation for an
+	// open PR: "clean", "dirty" (conflicts — mirrors Mergeable=false),
+	// "blocked" (an unmet branch-protection requirement — a required review,
+	// check, or signature GitHub does not detail in this call), "unstable"
+	// (failing non-required checks, still mergeable), "behind", or "unknown"
+	// while GitHub is still computing it. Drives the deterministic
+	// merge-blocked action for submitter PRs (TDD 4.7a). Not persisted.
+	MergeableState string `yaml:"-" json:"-"`
+
 	// ReviewRequested is true when GitHub currently has a pending review request
 	// on the operator for this PR (the PR surfaced from the review-requested
 	// search). It is a live GitHub fact — the "please review" banner — that

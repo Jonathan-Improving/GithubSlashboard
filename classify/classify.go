@@ -246,6 +246,13 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		if submitterFeedbackPending(pr) {
 			pr.Action = model.ActionReviewFeedback
 		}
+		// A merge-blocked PR (an unmet branch-protection rule) is a hard
+		// GitHub fact distinct from a conflict; checked before conflicted so
+		// conflicted still wins when both somehow hold (the harder blocker,
+		// same precedence as the verified path).
+		if submitterMergeBlocked(pr) {
+			pr.Action = model.ActionMergeBlocked
+		}
 		// A merge conflict is the harder blocker, so it wins over pending
 		// review feedback when both hold (same precedence as the verified path).
 		if submitterConflict(pr) {
@@ -321,6 +328,17 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// (render ballWithUs).
 	if pr.Bucket == model.BucketOpen && submitterFeedbackPending(pr) {
 		pr.Action = model.ActionReviewFeedback
+	}
+
+	// Deterministic merge-blocked override (submitter only). GitHub's own
+	// mergeable_state reports "blocked" for an unmet branch-protection rule —
+	// a required review, check, or signature the tool cannot see the specifics
+	// of. It is a hard fact distinct from a conflict (dirty and blocked are
+	// mutually exclusive states GitHub reports), so it is applied before the
+	// conflicted check below: if a PR is somehow both, conflicted still wins as
+	// the harder blocker.
+	if pr.Bucket == model.BucketOpen && submitterMergeBlocked(pr) {
+		pr.Action = model.ActionMergeBlocked
 	}
 
 	// Deterministic conflicted override (submitter only). A merge conflict is a
@@ -408,6 +426,15 @@ func submitterConflict(pr model.PR) bool {
 	return pr.Role == model.RoleSubmitter && pr.Mergeable != nil && !*pr.Mergeable
 }
 
+// submitterMergeBlocked reports whether pr is a submitter-authored PR GitHub
+// reports as mergeable_state "blocked": an unmet branch-protection requirement
+// is preventing merge, distinct from a conflict (TDD 4.7a). Submitter-scoped
+// for the same reason as submitterConflict — the block is not the reviewer's
+// to clear.
+func submitterMergeBlocked(pr model.PR) bool {
+	return pr.Role == model.RoleSubmitter && pr.MergeableState == "blocked"
+}
+
 // fingerprint hashes every deterministic input to an open PR's judgment: the
 // most recent trail event (its timestamp, kind, and text — not the whole
 // trail, since only the latest authoritative event governs classification per
@@ -432,9 +459,9 @@ func fingerprint(pr model.PR) string {
 		}
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%t|%d|%s|%t",
+	fmt.Fprintf(h, "%s|%s|%s|%t|%d|%s|%s|%t",
 		last.Timestamp.UTC().Format(time.RFC3339Nano), last.Kind, last.Text,
-		pr.CIFailing, pr.UnresolvedThreads, mergeable, pr.ReviewRequested)
+		pr.CIFailing, pr.UnresolvedThreads, mergeable, pr.MergeableState, pr.ReviewRequested)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

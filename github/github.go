@@ -262,6 +262,11 @@ func (c *Client) attachEventTrail(ctx context.Context, p *model.PR) error {
 			m := pull.GetMergeable()
 			p.Mergeable = &m
 		}
+		// MergeableState is GitHub's own richer verdict on the same Get call
+		// (no extra cost): "blocked" means an unmet branch-protection
+		// requirement, distinct from "dirty" (conflicts, mirrors Mergeable),
+		// and drives the deterministic merge-blocked action (classify).
+		p.MergeableState = pull.GetMergeableState()
 	}
 
 	var events []model.Event

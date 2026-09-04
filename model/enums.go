@@ -32,6 +32,13 @@ const (
 	// since a merge conflict is a hard fact and, like changes_requested, needs
 	// the author to act.
 	ActionConflicted Action = "conflicted"
+	// ActionMergeBlocked marks a submitter's open PR GitHub reports as
+	// mergeable_state "blocked": an unmet branch-protection requirement
+	// (required review, required check, required signature, or any other rule
+	// GitHub does not detail in this call) is preventing merge. Set
+	// deterministically (not inferred), distinct from ActionConflicted — dirty
+	// and blocked are mutually exclusive states GitHub reports (TDD 4.7a).
+	ActionMergeBlocked Action = "merge_blocked"
 	// ActionReviewFeedback marks a submitter's open PR carrying unresolved
 	// review threads: reviewers have left line comments the author has not yet
 	// resolved. Set deterministically from GitHub's review-thread resolution
@@ -100,7 +107,7 @@ var (
 	validActions = map[Action]struct{}{
 		ActionAwaitingReview: {}, ActionChangesRequested: {}, ActionAuthorActive: {},
 		ActionUnassigned: {}, ActionBlockedExternal: {}, ActionMergeReady: {},
-		ActionConflicted: {}, ActionReviewFeedback: {},
+		ActionConflicted: {}, ActionMergeBlocked: {}, ActionReviewFeedback: {},
 	}
 	validCloseReasons = map[CloseReason]struct{}{
 		CloseReasonSuperseded: {}, CloseReasonCancelled: {},

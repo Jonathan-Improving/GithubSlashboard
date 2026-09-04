@@ -338,6 +338,90 @@ func TestConflictedSurfacesWhenUnverified(t *testing.T) {
 	}
 }
 
+// TestMergeBlockedSubmitterOverride covers TDD 4.7a: GitHub's own
+// mergeable_state "blocked" overrides a model-inferred merge_ready — the
+// concrete defect (a green ✅ row on a PR GitHub itself reports as blocked)
+// that motivated this rubric.
+func TestMergeBlockedSubmitterOverride(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"merge_ready","priority":"neutral","companion":"approved and CI passing","emoji":"✅"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 20, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Bucket != model.BucketOpen {
+		t.Errorf("merge-blocked PR should stay open, got %q", got.Bucket)
+	}
+	if got.Action != model.ActionMergeBlocked {
+		t.Errorf("action = %q, want merge_blocked (deterministic override)", got.Action)
+	}
+}
+
+func TestMergeBlockedReviewerUnaffected(t *testing.T) {
+	// A merge-blocked PR the operator only reviews is not the operator's to
+	// clear; the inferred action must stand.
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting on a reviewer","emoji":"✅"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 21, GitHubState: model.GitHubStateOpen, Role: model.RoleReviewer,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action == model.ActionMergeBlocked {
+		t.Errorf("reviewer PR must not be marked merge_blocked")
+	}
+}
+
+func TestMergeBlockedDoesNotOverrideStale(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"stale","priority":"neutral","companion":"tombstone left open intentionally","emoji":"✅"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 22, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Bucket != model.BucketStale {
+		t.Errorf("stale should win over merge_blocked, got bucket %q", got.Bucket)
+	}
+	if got.Action == model.ActionMergeBlocked {
+		t.Errorf("stale PR should carry no action, got merge_blocked")
+	}
+}
+
+func TestMergeBlockedSurfacesWhenUnverified(t *testing.T) {
+	now := time.Now()
+	c := testClassifier("garbage not json", now)
+	pr := model.PR{Repo: "o/n", Number: 23, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if !got.Unverified {
+		t.Errorf("expected unverified row (TDD 6.4)")
+	}
+	if got.Action != model.ActionMergeBlocked {
+		t.Errorf("action = %q, want merge_blocked even when unverified", got.Action)
+	}
+}
+
+func TestMergeBlockedWinsOverReviewFeedback(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting","emoji":"⏳"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 24, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, UnresolvedThreads: 3, Mergeable: trueBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action != model.ActionMergeBlocked {
+		t.Errorf("action = %q, want merge_blocked to win over review_feedback", got.Action)
+	}
+}
+
+func TestConflictedWinsOverMergeBlocked(t *testing.T) {
+	// dirty and blocked are mutually exclusive states GitHub actually reports,
+	// but if a PR were somehow both, conflicted must win as the harder blocker
+	// (TDD 4.7a).
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting","emoji":"⏳"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 25, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: falseBool(), MergeableState: "blocked"}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action != model.ActionConflicted {
+		t.Errorf("action = %q, want conflicted to win over merge_blocked", got.Action)
+	}
+}
+
 func TestCarriedTerminalPreservesCachedNotesNoProviderCall(t *testing.T) {
 	// A carried terminal record has its bucket set, a cached companion/emoji,
 	// and NO event trail. classify must keep the cached verdict and must not

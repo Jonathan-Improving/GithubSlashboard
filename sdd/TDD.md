@@ -11,7 +11,7 @@ change in front of you.
 | 1 | GitHub data acquisition | 1.1 – 1.6 |
 | 2 | YAML store (source of truth) | 2.1 – 2.5 |
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
-| 4 | Status classification | 4.1 – 4.14 |
+| 4 | Status classification | 4.1 – 4.14, 4.7a |
 | 5 | Stale determination | 5.1 – 5.4 |
 | 6 | Provider / LLM hand-off | 6.1 – 6.18 |
 | 7 | Execution & portability | 7.1 – 7.2 |
@@ -267,6 +267,37 @@ reference them by name.
 - **Note** because the conflict is a hard fact rather than a judgment, it surfaces
   even on a row that fell to `unverified` (TDD 6.4); the row stays unverified since
   its disposition was not model-judged
+
+### 4.7a A submitter's merge-blocked PR is flagged deterministically
+- **Given** an open PR the operator authored that GitHub reports as
+  `mergeable_state: blocked` — a branch-protection requirement is unmet (a
+  required review, a required status check, a required commit signature, or
+  any other rule the tool cannot see the specifics of) — and the PR is not
+  already conflicted (TDD 4.7)
+- **When** classified
+- **Then** its Action Needed value is Merge Blocked — assigned deterministically
+  from GitHub's own mergeable-state computation, not inferred from the event
+  trail — and this overrides whatever open-PR action the model inferred, including
+  a model-inferred `merge_ready`, because GitHub itself is the authority on
+  whether a PR can actually merge
+- **And** the tool does not attempt to name *why* it is blocked: GitHub does not
+  return that detail in the same call, and the branch-protection endpoint that
+  would (ISSUES § C) is frequently unavailable to a read-only token on a
+  repository the operator does not administer — the row states the fact
+  ("blocked from merging") without guessing a cause
+- **And** this is distinct from Conflicted (TDD 4.7): `dirty` (a textual
+  conflict) and `blocked` (an unmet branch-protection rule) are mutually
+  exclusive states GitHub reports, so a PR is flagged as one or the other, never
+  both — Conflicted takes precedence when GitHub reports the PR as both
+  unmergeable and dirty, since a conflict must be resolved before a
+  protection-rule block can even be evaluated
+- **And** it never overrides the Stale bucket nor the immutable merged/closed
+  floors, and a merge-blocked PR the operator only reviews is not flagged (the
+  block is not theirs to clear)
+- **Note** because the block is a hard fact rather than a judgment, it surfaces
+  even on a row that fell to `unverified`; a model-inferred `merge_ready` sitting
+  on a row GitHub itself reports as blocked was the concrete defect motivating
+  this rubric (found live, not by any test — see ANTI-PATTERNS #9)
 
 ### 4.8 A reviewer PR with a pending review request awaits our action
 - **Given** an open PR the operator was asked to review that GitHub currently

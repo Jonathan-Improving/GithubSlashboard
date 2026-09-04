@@ -339,7 +339,7 @@ func actionNeededCell(p model.PR) string {
 	marker := markPending
 	switch p.Action {
 	case model.ActionAuthorActive, model.ActionChangesRequested, model.ActionMergeReady,
-		model.ActionConflicted, model.ActionReviewFeedback:
+		model.ActionConflicted, model.ActionMergeBlocked, model.ActionReviewFeedback:
 		marker = markBackForth
 	}
 	note := p.Companion
@@ -349,6 +349,13 @@ func actionNeededCell(p model.PR) string {
 	if p.Action == model.ActionConflicted {
 		// Surface the conflict explicitly even alongside the inferred note.
 		note = "merge conflict — " + note
+	}
+	if p.Action == model.ActionMergeBlocked {
+		// Surface the block explicitly: GitHub's own mergeable_state says this
+		// cannot merge, which the inferred note (possibly still "approved,
+		// ready to merge" from before the block appeared) would otherwise
+		// contradict.
+		note = "blocked from merging — " + note
 	}
 	if p.Action == model.ActionReviewFeedback {
 		// Surface the outstanding feedback explicitly: the inferred note may
