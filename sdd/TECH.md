@@ -101,7 +101,7 @@ see SCHEMA.md.
 | `config` | Loads and validates configuration; owns the named constants (word bounds, retry cap, the PR and issue age thresholds, provider selection). |
 | `github` | Owns all GitHub access; fetches the tracked PR and issue sets and assembles each item's event trail (REST, plus a read-only GraphQL query for PR review-thread resolution state), skipping the crawl for items the prior store already records as terminal (TDD 1.5, 8.1). Exposes read-only operations only. |
 | `model` | Owns the domain types: the PR and issue records, each entity's closed-set enums, and the shared event-trail types. |
-| `classify` | Applies the deterministic floors (PR merged/closed-unmerged, issue closed) and orchestrates provider judgment for open-item disposition, priority, and companion prose. Skips the provider entirely for an issue with no conversation to judge (TDD 8.3). |
+| `classify` | Applies the deterministic floors (PR merged/closed-unmerged, issue closed) and orchestrates provider judgment for open-item disposition, priority, and companion prose. Skips the provider entirely for an issue with no conversation to judge (TDD 8.3), and for an open PR whose deterministic inputs are unchanged since the prior stored record, which it is constructed with (TDD 4.13). |
 | `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink. Kiro CLI is the MVP harness. |
 | `store` | Owns the YAML source of truth: read, validate, merge (preserving operator-set state), and write `!pr` and `!issue` documents, preserving unrecognized tags verbatim. |
 | `render` | Pure function from the store to the Markdown status document; owns the layout that reproduces the established structure and the issues sections appended below it. |
@@ -109,8 +109,13 @@ see SCHEMA.md.
 
 ## Concurrency model
 
-The pipeline is sequential by default: one process, one pass, then exit. The only
-concurrency is optional fan-out within the `classify` stage — independent PRs may
+The pipeline is sequential by default: one process, one pass, then exit. The
+store's prior records are read once, up front, and flow into two independent
+consumers: `github`'s acquisition pass (to skip re-crawling a terminal item, TDD
+1.5, 8.1) and `classify`'s construction (to skip the provider call for an open
+PR whose deterministic inputs are unchanged, TDD 4.13) — both read-only uses of
+the same map, never written to by either stage. The only concurrency is optional
+fan-out within the `classify` stage — independent PRs may
 have their provider calls issued in parallel, since each PR's judgment depends only
 on its own event trail and shares no mutable state. Any such parallelism is bounded
 by a worker limit and every provider call is individually timeout-bounded; results

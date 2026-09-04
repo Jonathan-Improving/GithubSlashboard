@@ -27,7 +27,9 @@ func testClassifier(out string, now time.Time) *Classifier {
 	// Tests that exercise per-row inference on floor PRs need the full path.
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(fixedProvider{out: out}, cfg, log, func() time.Time { return now })
+	// nil prior: every existing test's PR is first-seen, so it must always
+	// reach the provider (TDD 4.14) regardless of the new skip behavior.
+	return New(fixedProvider{out: out}, cfg, log, func() time.Time { return now }, nil)
 }
 
 // countingProvider records how many times it was invoked.
@@ -135,7 +137,7 @@ func TestSkipFloorNotesAvoidsProviderForFloors(t *testing.T) {
 	cfg.SkipFloorNotes = true // fast path
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"merged","priority":"neutral","companion":"three word note","emoji":"✅"}`}
-	c := New(cp, cfg, log, func() time.Time { return now })
+	c := New(cp, cfg, log, func() time.Time { return now }, nil)
 
 	prs := []model.PR{
 		{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateMerged, Role: model.RoleSubmitter},
@@ -165,7 +167,7 @@ func TestSkipFloorNotesStillClassifiesOpen(t *testing.T) {
 	cfg.SkipFloorNotes = true
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting on a reviewer","emoji":"✅"}`}
-	c := New(cp, cfg, log, func() time.Time { return now })
+	c := New(cp, cfg, log, func() time.Time { return now }, nil)
 
 	pr := model.PR{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateOpen, Role: model.RoleReviewer, Created: now, LastActivity: now}
 	got := c.classifyOne(context.Background(), pr)
@@ -341,7 +343,7 @@ func TestCarriedTerminalPreservesCachedNotesNoProviderCall(t *testing.T) {
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"merged","priority":"neutral","companion":"three word note","emoji":"✅"}`}
-	c := New(cp, cfg, log, func() time.Time { return now })
+	c := New(cp, cfg, log, func() time.Time { return now }, nil)
 
 	merged := model.PR{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateMerged, Role: model.RoleSubmitter,
 		Bucket: model.BucketMerged, Priority: model.PriorityElevated, Companion: "shipped in v2", Emoji: "🚀"}
@@ -428,5 +430,218 @@ func TestClassifyAllPreservesOrder(t *testing.T) {
 		if out[i].Number != in[i].Number {
 			t.Errorf("order not preserved at %d: got %d", i, out[i].Number)
 		}
+	}
+}
+
+// unchangedOpenClassifierWithPrior builds a Classifier with the given prior
+// store map, backed by a countingProvider so tests can assert whether the
+// provider was actually invoked (TDD 4.13, 4.14).
+func unchangedOpenClassifierWithPrior(out string, now time.Time, prior map[string]model.PR) (*Classifier, *countingProvider) {
+	cfg := config.Default()
+	cfg.GitHubToken = "tok"
+	cfg.ClassifyWorkers = 2
+	cfg.SkipFloorNotes = false
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cp := &countingProvider{out: out}
+	return New(cp, cfg, log, func() time.Time { return now }, prior), cp
+}
+
+// freshUnchangedPR and priorUnchangedPR build a matching first-run/second-run
+// pair: the fresh PR carries the same deterministic inputs the prior record's
+// InputFingerprint was computed from, and the prior record carries a settled,
+// verified verdict a second run should be able to reuse untouched.
+func priorUnchangedPR(events []model.Event, ciFailing bool, unresolved int, mergeable *bool, reviewRequested bool) model.PR {
+	base := model.PR{
+		Repo: "o/n", Number: 50, Role: model.RoleSubmitter,
+		Events: events, CIFailing: ciFailing, UnresolvedThreads: unresolved,
+		Mergeable: mergeable, ReviewRequested: reviewRequested,
+	}
+	fp := fingerprint(base)
+	return model.PR{
+		Repo: "o/n", Number: 50, Role: model.RoleSubmitter,
+		Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
+		Priority: model.PriorityElevated, Companion: "cached note from last run", Emoji: "⏳",
+		Unverified: false, InputFingerprint: fp,
+	}
+}
+
+func freshUnchangedPR(events []model.Event, ciFailing bool, unresolved int, mergeable *bool, reviewRequested bool) model.PR {
+	return model.PR{
+		Repo: "o/n", Number: 50, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: time.Now(), LastActivity: time.Now(),
+		Events: events, CIFailing: ciFailing, UnresolvedThreads: unresolved,
+		Mergeable: mergeable, ReviewRequested: reviewRequested,
+	}
+}
+
+func TestUnchangedOpenPRSkipsProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, nil, false)
+	fresh := freshUnchangedPR(events, false, 0, nil, false)
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"provider should never be asked","emoji":"❌"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 0 {
+		t.Errorf("provider called %d times for an unchanged PR, want 0 (TDD 4.13)", cp.calls)
+	}
+	if got.Action != model.ActionAwaitingReview || got.Companion != "cached note from last run" || got.Emoji != "⏳" {
+		t.Errorf("cached verdict not carried forward verbatim: %+v", got)
+	}
+	if got.Priority != model.PriorityElevated {
+		t.Errorf("priority = %q, want the cached elevated value preserved", got.Priority)
+	}
+	if got.InputFingerprint == "" {
+		t.Errorf("fingerprint must be stamped on the carried-forward record too")
+	}
+}
+
+func TestChangedLastEventStillInvokesProvider(t *testing.T) {
+	now := time.Now()
+	priorEvents := []model.Event{{Timestamp: now.Add(-2 * time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	freshEvents := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "actually, one more thing"}}
+	prior := priorUnchangedPR(priorEvents, false, 0, nil, false)
+	fresh := freshUnchangedPR(freshEvents, false, 0, nil, false)
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"new comment changes things","emoji":"🔄"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times for a PR with a new trail event, want 1 (TDD 4.14)", cp.calls)
+	}
+	if got.Action != model.ActionChangesRequested {
+		t.Errorf("action = %q, want the freshly judged value, not the stale cache", got.Action)
+	}
+}
+
+func TestChangedCIFailingStillInvokesProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, nil, false)
+	fresh := freshUnchangedPR(events, true, 0, nil, false) // CI flipped to failing
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"ci just started failing","emoji":"🚧"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when CIFailing changed, want 1 (TDD 4.14) — this is the exact csharp#514 scenario, where a check-run cycle completed without moving any other signal", cp.calls)
+	}
+	if !got.CIFailing {
+		t.Errorf("fresh CIFailing=true must be preserved on the judged result")
+	}
+}
+
+func TestChangedUnresolvedThreadsStillInvokesProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, nil, false)
+	fresh := freshUnchangedPR(events, false, 2, nil, false) // new unresolved threads appeared
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"new line comments","emoji":"💬"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when UnresolvedThreads changed, want 1 (TDD 4.14)", cp.calls)
+	}
+	// The deterministic review-feedback override still applies on top of the
+	// freshly judged result, same as any other classify run.
+	if got.Action != model.ActionReviewFeedback {
+		t.Errorf("action = %q, want review_feedback override applied on the fresh judgment", got.Action)
+	}
+}
+
+func TestChangedMergeableStillInvokesProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, trueBool(), false)
+	fresh := freshUnchangedPR(events, false, 0, falseBool(), false) // base branch moved, now conflicting
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"now conflicts with base","emoji":"⚠️"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when Mergeable changed, want 1 (TDD 4.14)", cp.calls)
+	}
+	if got.Action != model.ActionConflicted {
+		t.Errorf("action = %q, want conflicted override applied on the fresh judgment", got.Action)
+	}
+}
+
+func TestChangedReviewRequestedStillInvokesProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, nil, false)
+	fresh := freshUnchangedPR(events, false, 0, nil, true) // a fresh review request landed
+	fresh.Role = model.RoleReviewer
+	prior.Role = model.RoleReviewer
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"we already reviewed this","emoji":"🔄"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when ReviewRequested changed, want 1 (TDD 4.14)", cp.calls)
+	}
+	if got.Action != model.ActionAwaitingReview {
+		t.Errorf("action = %q, want awaiting_review override applied on the fresh judgment", got.Action)
+	}
+}
+
+func TestFirstSeenPRAlwaysInvokesProvider(t *testing.T) {
+	now := time.Now()
+	fresh := freshUnchangedPR([]model.Event{{Timestamp: now, Kind: model.EventComment, Text: "first comment"}}, false, 0, nil, false)
+
+	// Empty prior map: no record for this PR at all.
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"brand new PR","emoji":"✅"}`,
+		now, map[string]model.PR{})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times for a first-seen PR, want 1 (TDD 4.14)", cp.calls)
+	}
+	if got.Companion != "brand new PR" {
+		t.Errorf("expected the freshly judged companion, got %q", got.Companion)
+	}
+}
+
+func TestPreviouslyUnverifiedPriorAlwaysInvokesProvider(t *testing.T) {
+	now := time.Now()
+	events := []model.Event{{Timestamp: now.Add(-time.Hour), Kind: model.EventComment, Text: "lgtm"}}
+	prior := priorUnchangedPR(events, false, 0, nil, false)
+	prior.Unverified = true // last run's judgment was degraded, never a real cache
+	prior.InputFingerprint = ""
+	fresh := freshUnchangedPR(events, false, 0, nil, false) // identical inputs otherwise
+
+	c, cp := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"merge_ready","priority":"neutral","companion":"now judged for real","emoji":"✅"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	got := c.classifyOne(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when the prior record was unverified, want 1 (TDD 4.14) — an unverified result must never be cached forward", cp.calls)
+	}
+	if got.Action != model.ActionMergeReady {
+		t.Errorf("expected the freshly judged action, got %q", got.Action)
 	}
 }

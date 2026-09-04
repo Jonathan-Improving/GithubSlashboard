@@ -5,6 +5,7 @@
 | B | Acquisition is broad and bounded by GitHub's search rate limit | Low |
 | C | The CI-failing flag counts any failing check, not just required ones | Low |
 | D | An inferred note can outlive the fact it asserts | Medium |
+| E | The unchanged-input fingerprint cannot see a same-count thread swap | Low |
 
 ## B. Acquisition is broad and bounded by GitHub's search rate limit
 
@@ -18,9 +19,11 @@ cannot be sped up by issuing more searches in parallel. As of the terminal-skip
 optimization, PRs the store already records as merged/closed are no longer
 re-crawled by default (their per-PR calls are skipped and the cached record is
 carried forward — TDD 1.5), so the remaining per-PR cost is the *open* PRs, which
-must still be re-crawled each run because their state can advance. Each open PR
-additionally pays one check-runs call (TDD 1.4) and one GraphQL review-threads
-query (TDD 1.6), so open PRs now dominate the acquisition budget.
+must still be re-crawled each run because their state can advance — the fetch, not
+just the provider call, is what proves nothing changed (TDD 4.13), so this cost is
+not avoidable by any input-comparison scheme. Each open PR additionally pays one
+check-runs call (TDD 1.4) and one GraphQL review-threads query (TDD 1.6), so open
+PRs dominate the acquisition budget.
 
 Issue acquisition adds three more searches (authored / commented / assigned) plus a
 per-issue fetch, comments, and timeline. Measured against a live account this is
@@ -28,16 +31,17 @@ negligible next to the PR set — single-digit issue counts, under ten seconds �
 closed issues are subject to the same terminal-skip, so issues are not a
 contributor to this limitation.
 
-Classification itself is no longer the bottleneck: the session provider runs a pool
-of harnesses (sized to the classify worker limit), so a full classify with
-inferential notes on every row completes well inside the scheduled interval.
+This entry previously also covered the provider (LLM) cost of a full classify —
+that half is now resolved: an open PR whose deterministic inputs are unchanged
+since the prior stored record skips the provider call entirely and carries the
+cached verdict forward (TDD 4.13), using an opaque input fingerprint rather than
+`updated_at` alone, because live GitHub data showed a full CI check-run cycle can
+complete without moving a PR's own last-modified signal (see ANTI-PATTERNS #6).
+What remains open here is the GitHub-side acquisition cost alone.
 
 **Remaining / further mitigation options**:
 - Scope acquisition to a smaller working set (e.g. open PRs plus those updated
   within a recent window), which TDD 1.1 permits; this cuts acquisition time.
-- Extend the terminal-skip caching to *open* PRs by `updated_at`: refetch a PR's
-  event trail only when its `updated_at` advanced past the stored record,
-  avoiding the full paginated re-fetch for quiescent open PRs too.
 - Accept it: the acquisition cost in an unattended run that has a wide window is
   not a practical constraint.
 
@@ -107,3 +111,32 @@ state into the trail, which improves the model's *input* but does not make its
   calls precisely on the rows that change most often.
 - Accept it: the refresh interval bounds the drift, and the deterministic marks are
   the authoritative half of the row.
+
+## E. The unchanged-input fingerprint cannot see a same-count thread swap
+
+**Severity**: Low (requires two independent events to land in the same run with no
+other trail activity in between; the count itself is always caught)
+
+The unchanged-input fingerprint (TDD 4.13) includes `UnresolvedThreads` as a count,
+not as the identity of which threads are open. A run in which one thread is
+resolved and a different one is newly opened, with the count landing on the same
+number and no other trail event in between, would fingerprint identically to the
+prior run and be skipped — even though which comment the author must answer has
+changed.
+
+In practice this is narrower than it first appears: opening a new review thread is
+itself a comment event, which changes the "most recent trail event" component of
+the fingerprint and would already force a re-judgment. The gap is real only when
+the swap produces no trail event of its own in the same run, which live probing
+during this feature's development could not produce or confirm a concrete case
+for — the review-thread-resolution GraphQL query was found to have no accompanying
+timeline entry, but every resolution observed also carried a comment.
+
+**Mitigation options**:
+- Fold the resolved thread-node IDs (not just the count) into the fingerprint via
+  the GraphQL review-threads query already being made (TDD 1.6, `collectReviewThreads`
+  equivalent). Closes the gap fully; costs nothing extra since the query already
+  runs.
+- Accept it: the scenario requires a same-run count coincidence with no other
+  qualifying trail activity, which is narrower than most of the other known
+  limitations in this document.

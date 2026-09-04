@@ -166,7 +166,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			}
 		}()
 	}
-	classifier := classify.New(prov, cfg, log, time.Now)
+	classifier := classify.New(prov, cfg, log, time.Now, prior)
 	classifyStart := time.Now()
 	classified := classifier.ClassifyAll(ctx, fetched)
 	log.Info("classified PRs", "count", len(classified), "phase", "classify", "took", time.Since(classifyStart).String(), "workers", cfg.ClassifyWorkers)

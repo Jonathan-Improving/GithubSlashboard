@@ -7,6 +7,9 @@ package classify
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,21 +20,27 @@ import (
 )
 
 // Classifier judges PRs using a provider under a configuration. It holds no
-// mutable per-PR state, so PRs may be classified concurrently.
+// mutable per-PR state, so PRs may be classified concurrently. prior is the
+// store's existing records keyed by PR key, consulted read-only to detect an
+// unchanged open PR and skip the provider call for it (TDD 4.13); it is never
+// written to by the classifier.
 type Classifier struct {
-	prov provider.Provider
-	cfg  config.Config
-	log  *slog.Logger
-	now  func() time.Time
+	prov  provider.Provider
+	cfg   config.Config
+	log   *slog.Logger
+	now   func() time.Time
+	prior map[string]model.PR
 }
 
 // New builds a Classifier. now is injectable for deterministic tests; pass
-// time.Now in production.
-func New(prov provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time) *Classifier {
+// time.Now in production. prior is the store's existing PR records keyed by PR
+// key (TDD 4.13); pass nil or an empty map when there is no prior store (e.g.
+// first run) — every PR is then treated as first-seen and reaches the provider.
+func New(prov provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR) *Classifier {
 	if now == nil {
 		now = time.Now
 	}
-	return &Classifier{prov: prov, cfg: cfg, log: log, now: now}
+	return &Classifier{prov: prov, cfg: cfg, log: log, now: now, prior: prior}
 }
 
 // ClassifyAll classifies every PR, bounding provider fan-out by the configured
@@ -173,6 +182,26 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		return pr
 	}
 
+	// Unchanged-since-last-run short-circuit (TDD 4.13). All deterministic
+	// inputs to the judgment have already been freshly fetched above (CIFailing
+	// just normalized; UnresolvedThreads, Mergeable, ReviewRequested, and the
+	// trail itself came from the acquisition pass before classification ever
+	// runs) — this only ever skips the provider call, never the fetch that
+	// proves nothing changed. A prior record that was itself unverified is never
+	// trusted as a cache: its bucket/action/companion may already be the
+	// degraded fallback, not a real judgment worth repeating forever.
+	fp := fingerprint(pr)
+	if old, ok := c.prior[pr.Key()]; ok && !old.Unverified && old.InputFingerprint != "" && old.InputFingerprint == fp {
+		pr.Bucket = old.Bucket
+		pr.Action = old.Action
+		pr.Priority = old.Priority
+		pr.Companion = old.Companion
+		pr.Emoji = old.Emoji
+		pr.Unverified = false
+		pr.InputFingerprint = fp
+		return pr
+	}
+
 	res := c.judge(ctx, pr, model.GitHubStateOpen)
 	if res.Unverified {
 		pr.Unverified = true
@@ -198,6 +227,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
 		c.log.Warn("open classification unverified", "pr", pr.Key(), "attempts", res.Attempts, "reason", res.Err)
+		// Deliberately not stamping InputFingerprint here: an unverified result
+		// must never be treated as a cached judgment on a later run (TDD 4.13,
+		// 4.14), and old.Unverified is already checked above regardless — but
+		// leaving the field empty makes the intent explicit rather than relying
+		// solely on the Unverified guard.
 		return pr
 	}
 
@@ -285,6 +319,10 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	if pr.Bucket == model.BucketStale {
 		pr.CIFailing = false
 	}
+
+	// Stamp the fingerprint of the inputs that produced this judgment, so a
+	// later run can detect "unchanged" and skip the provider call (TDD 4.13).
+	pr.InputFingerprint = fp
 	return pr
 }
 
@@ -320,6 +358,36 @@ func submitterCIFailing(pr model.PR) bool {
 // only meaningful while Mergeable is known (nil = GitHub had not computed it).
 func submitterConflict(pr model.PR) bool {
 	return pr.Role == model.RoleSubmitter && pr.Mergeable != nil && !*pr.Mergeable
+}
+
+// fingerprint hashes every deterministic input to an open PR's judgment: the
+// most recent trail event (its timestamp, kind, and text — not the whole
+// trail, since only the latest authoritative event governs classification per
+// TDD 4.4), CIFailing, UnresolvedThreads, Mergeable, and ReviewRequested. Two
+// calls with the same inputs always produce the same fingerprint, so comparing
+// it against a prior stored value detects "nothing worth re-judging happened"
+// without trusting any single field (e.g. LastActivity) as a proxy — live
+// GitHub data showed a full CI check-run cycle can complete without moving a
+// PR's own last-modified signal (TDD 4.13). The result is opaque; it has no
+// meaning beyond equality comparison.
+func fingerprint(pr model.PR) string {
+	var last model.Event
+	if n := len(pr.Events); n > 0 {
+		last = pr.Events[n-1]
+	}
+	mergeable := "unknown"
+	if pr.Mergeable != nil {
+		if *pr.Mergeable {
+			mergeable = "true"
+		} else {
+			mergeable = "false"
+		}
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|%s|%t|%d|%s|%t",
+		last.Timestamp.UTC().Format(time.RFC3339Nano), last.Kind, last.Text,
+		pr.CIFailing, pr.UnresolvedThreads, mergeable, pr.ReviewRequested)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // staleByAge reports whether the PR has had no activity within the configured

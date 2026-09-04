@@ -37,7 +37,7 @@ func issueClassifier(p provider.Provider) *Classifier {
 	// would just repeat an identical rejection.
 	cfg.LLMRetryCap = 0
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(p, cfg, log, func() time.Time { return issueRefNow })
+	return New(p, cfg, log, func() time.Time { return issueRefNow }, nil)
 }
 
 // openIssue builds an open issue with the given comment count and last activity.

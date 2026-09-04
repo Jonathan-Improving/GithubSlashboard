@@ -118,6 +118,17 @@ type PR struct {
 	// the render (a pure function of the store) could not show one.
 	LastActivity time.Time `yaml:"last_activity,omitempty" json:"last_activity,omitempty"`
 
+	// InputFingerprint is an opaque hash of every deterministic input that could
+	// change an open PR's judgment: the most recent trail event, CIFailing,
+	// UnresolvedThreads, Mergeable, and ReviewRequested. It exists solely so a
+	// later run can detect "nothing worth re-judging happened" without trusting
+	// LastActivity alone, which live GitHub data proved insufficient — a full
+	// check-run cycle can complete without moving a PR's own last-modified
+	// signal (TDD 4.13). Persisted so the comparison survives across runs;
+	// opaque (not itself meaningful) so it never needs to grow the schema again
+	// when a new input starts mattering — only the hash's inputs change.
+	InputFingerprint string `yaml:"input_fingerprint,omitempty" json:"input_fingerprint,omitempty"`
+
 	// Events is the chronological event trail (TDD 1.4). Not persisted.
 	Events []Event `yaml:"-" json:"-"`
 }

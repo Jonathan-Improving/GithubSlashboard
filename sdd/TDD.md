@@ -11,7 +11,7 @@ change in front of you.
 | 1 | GitHub data acquisition | 1.1 – 1.6 |
 | 2 | YAML store (source of truth) | 2.1 – 2.5 |
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
-| 4 | Status classification | 4.1 – 4.12 |
+| 4 | Status classification | 4.1 – 4.14 |
 | 5 | Stale determination | 5.1 – 5.4 |
 | 6 | Provider / LLM hand-off | 6.1 – 6.8 |
 | 7 | Execution & portability | 7.1 – 7.2 |
@@ -343,6 +343,34 @@ reference them by name.
   next move, so this is expressed as a mark on the row rather than by moving the
   row to a different table. The flag is submitter-scoped, so it never affects the
   reviewer section's ball-holding split
+
+### 4.13 An unchanged open PR skips the provider call
+- **Given** an open PR whose deterministic inputs — its most recent trail event,
+  CI failing state, unresolved-review-thread count, and mergeability — are
+  identical to what they were when the stored record was last classified, and
+  that stored record was not itself unverified
+- **When** the tool classifies the PR on a subsequent run
+- **Then** it never calls the provider for this PR: the stored bucket, action,
+  priority, companion, and emoji are carried forward verbatim
+- **And** the GitHub fetch (including check-runs, review threads, and
+  mergeability) still runs in full beforehand — only the provider call is
+  skipped, never the fact-gathering that would detect a change
+- **Note** this exists because the provider call is the expensive step (real
+  token cost against a real budget), while the deterministic fetch is what
+  proves nothing worth re-judging occurred; skipping the fetch instead would
+  make the "unchanged" determination itself untrustworthy (see the CI check-run
+  timing evidence behind 4.10 — a check-run cycle can complete without moving a
+  PR's own last-modified signal, so the comparison must be built from freshly
+  fetched deterministic facts, not a lighter proxy for them)
+
+### 4.14 A first-seen, changed, or previously-unverified PR always reaches the provider
+- **Given** an open PR that either has no prior stored record, or has a prior
+  record whose deterministic inputs (4.13) differ from the freshly fetched
+  ones, or has a prior record marked unverified
+- **When** the tool classifies the PR
+- **Then** the provider is called as normal — the skip in 4.13 never applies, so
+  a real change is never mistaken for a repeat, and a previously degraded
+  judgment is never cached forward as if it were settled
 
 ---
 
