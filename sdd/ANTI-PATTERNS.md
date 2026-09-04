@@ -13,6 +13,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 5 | Advertising a status the response vocabulary cannot satisfy | Medium |
 | 6 | Trusting unit tests to validate a deterministic fact's plumbing | Medium |
 | 7 | Sharing one timeout bound across two structurally different providers | Medium |
+| 8 | Deleting a handed-off file before the harness's asynchronous read of it | High |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -229,3 +230,56 @@ originally tuned for, before trusting it to serve either.
 fallback timeouts, plus a round of log analysis and a direct manual timing test to
 separate "primary hung" from "fallback is just slower than budgeted" before the
 real, narrower fix was implemented and re-verified live — Severity: Medium.
+
+## 8. Deleting a handed-off file before the harness's asynchronous read of it
+
+**Symptom**: A large fraction of open PRs across many runs came back with
+malformed or empty classification fields from the primary provider — an empty
+`action`, an invalid enum value — misattributed at first to model unreliability
+or session degradation, since the responses looked like ordinary bad LLM
+output rather than a systematic bug.
+
+**What was tried**:
+- Investigated as a fallback-timeout problem (ANTI-PATTERNS #7) — real, but
+  independent, and fixing it did not stop the primary's own failures.
+- Assumed the failures were the known cost of a heavyweight session harness
+  degrading mid-run, since the tool already has machinery (retry, fallback,
+  `unverified`) built to absorb exactly that.
+- Root cause was found only by attaching directly to the harness's own `tmux`
+  session and reading its transcript: it showed the harness's `Read` tool
+  reporting the prompt file did not exist, moments after being told to read
+  it — first evidence this was a file-handoff defect, not a model judgment
+  problem.
+
+**Root cause**: The prompt file was deleted by a `defer os.Remove(...)` scoped
+to the function that *sends* the file-handoff instruction, which returns as
+soon as the instruction is typed into the terminal — not once the harness has
+actually processed the turn. But the harness's own read of that file happens
+asynchronously afterward, as the model works through the turn at its own
+pace. So the file was reliably gone by the time the harness got around to
+reading it, and the harness reported a fact ("no such file") the code then
+treated as an ordinary bad classification.
+
+**Resolution**: Move the file's removal out of the send step entirely. The
+send step now returns the file's path instead of deleting it; the caller
+removes it only after the turn has fully concluded — the verdict/summary was
+collected or the turn was given up on — so the file survives for exactly as
+long as the harness might still be reading it.
+
+**Lesson**: When one step hands a resource to an asynchronous consumer and a
+later, separate step is what proves the consumer is done with it, tie the
+resource's cleanup to that later step — never to the hand-off step's own
+return, which only proves the hand-off was *sent*, not *consumed*. A `defer`
+placed for tidiness at the point something is created is exactly how this
+kind of premature cleanup hides: it reads as correct locally and only fails
+against the real asynchronous timing.
+
+**Cost**: The defect was live for the whole session before discovery — every
+live-verification run in that window mischaracterized its own primary
+failures as model/session unreliability rather than a plumbing bug, which in
+turn justified building and tuning the fallback feature's trigger conditions
+around a partly wrong picture of why primary was failing. Found only by an
+operator directly inspecting the harness's raw transcript, not by any test or
+log analysis — the logged error was truthful ("file not found") and gave no
+hint that the caller's own code had deleted the file that fast — Severity:
+High.

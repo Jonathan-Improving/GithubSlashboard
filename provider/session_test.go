@@ -125,6 +125,87 @@ func TestSessionInvokeLargePromptUsesFileHandoff(t *testing.T) {
 	}
 }
 
+// checkingSink wraps fakeSink, and on Await — called only after sendPrompt has
+// fully returned — records whether promptPath (captured by the test from the
+// instruction line) still exists AT THAT MOMENT. This is the regression test
+// for TDD 6.18: the file must still exist here, because a harness's own Read
+// happens asynchronously as it processes the turn, strictly after sendPrompt
+// returns — exactly the point the old code's `defer os.Remove` inside
+// sendPrompt had already fired, deleting the file before Await was even
+// called.
+type checkingSink struct {
+	fakeSink
+	promptPath         *string
+	fileExistedAtAwait *bool
+}
+
+func (c *checkingSink) Await(ctx context.Context) (string, error) {
+	if c.promptPath != nil && *c.promptPath != "" {
+		_, err := os.Stat(*c.promptPath)
+		existed := err == nil
+		c.fileExistedAtAwait = &existed
+	}
+	return c.fakeSink.Await(ctx)
+}
+
+// checkingTransport wraps fakeTransport and, on the SendLine call carrying the
+// file-handoff instruction, extracts the prompt file path so the test can
+// later check it via checkingSink.
+type checkingTransport struct {
+	fakeTransport
+	capturedPath *string
+}
+
+func (c *checkingTransport) SendLine(s string) error {
+	if strings.Contains(s, "Read the context and instructions") && c.capturedPath != nil {
+		for _, f := range strings.Fields(s) {
+			f = strings.TrimRight(f, ".,;")
+			if strings.HasSuffix(f, ".txt") {
+				*c.capturedPath = f
+				break
+			}
+		}
+	}
+	return c.fakeTransport.SendLine(s)
+}
+
+func TestSessionPromptFileSurvivesUntilTurnCompletes(t *testing.T) {
+	// TDD 6.18: the prompt file must not be removed until the harness's turn
+	// has actually concluded. The old code deleted it via a `defer` inside
+	// sendPrompt itself — which fires when sendPrompt *returns*, strictly
+	// before awaitResult (and the sink's Await) is ever called. So the file
+	// must still exist at the moment Await runs; if it doesn't, the delete
+	// raced ahead of the harness's own read.
+	var capturedPath string
+	var fileExistedAtAwait *bool
+	tr := &checkingTransport{capturedPath: &capturedPath}
+	sink := &checkingSink{fakeSink: fakeSink{verdict: goodJSON}, promptPath: &capturedPath, fileExistedAtAwait: fileExistedAtAwait}
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
+
+	var events []model.Event
+	for i := 0; i < 400; i++ {
+		events = append(events, model.Event{
+			Author: "user", Kind: model.EventComment,
+			Text: "a fairly long review comment that repeats to inflate the trail well beyond the inline threshold",
+		})
+	}
+	big := Request{Events: events, Constraints: ConstraintsFrom(3, 14)}
+
+	if _, err := p.Invoke(context.Background(), big, ""); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if capturedPath == "" {
+		t.Fatal("SendLine was never called with the file-handoff instruction")
+	}
+	if sink.fileExistedAtAwait == nil {
+		t.Fatal("Await was never called, or the path was never captured in time")
+	}
+	if !*sink.fileExistedAtAwait {
+		t.Fatal("prompt file was already gone by the time the harness's Await ran — " +
+			"it must survive until the harness's turn actually completes (TDD 6.18)")
+	}
+}
+
 func TestSessionInvokeStartsOnce(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}

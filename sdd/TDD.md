@@ -13,7 +13,7 @@ change in front of you.
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
 | 4 | Status classification | 4.1 – 4.14 |
 | 5 | Stale determination | 5.1 – 5.4 |
-| 6 | Provider / LLM hand-off | 6.1 – 6.17 |
+| 6 | Provider / LLM hand-off | 6.1 – 6.18 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
 | 9 | Notification hook | 9.1 – 9.6 |
@@ -593,6 +593,25 @@ reference them by name.
   both slots through one shared timeout would either make the fallback
   unusably tight or make every ordinary primary hang take proportionally
   longer to detect
+
+### 6.18 A session provider's prompt file survives until the harness's turn is done
+- **Given** a session provider hands an item to the harness by file (TDD 6.7,
+  large event trails exceed the terminal command-length limit)
+- **When** the instruction naming the file's path has been sent to the
+  harness
+- **Then** the file is not removed until the harness's turn has actually
+  concluded — either a verdict/summary was collected or the turn was given up
+  on — never immediately after the instruction is sent
+- **And** the harness's own asynchronous processing of the turn (reading the
+  file, reasoning about it, calling the result tool) always has the file
+  available to read, however long that takes within the call's own timeout
+- **Note** discovered by live inspection of a harness session rather than
+  from any test: sending the instruction only proves the keystrokes were
+  typed, not that the harness has read the file yet, so deleting the file as
+  soon as the instruction is sent races the harness's own read and can (did)
+  make every large-trail item fail with "file not found" — indistinguishable
+  from a model classification error until the harness's own transcript was
+  read directly
 
 ---
 

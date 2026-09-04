@@ -168,8 +168,12 @@ func (s *SessionProvider) Invoke(ctx context.Context, req Request, correction st
 		return "", err
 	}
 
-	if err := s.sendPrompt(ctx, prompt, "classify it and return your verdict via the verdict tool"); err != nil {
+	promptPath, err := s.sendPrompt(ctx, prompt, "classify it and return your verdict via the verdict tool")
+	if err != nil {
 		return "", err
+	}
+	if promptPath != "" {
+		defer func() { _ = os.Remove(promptPath) }()
 	}
 
 	// Wait for the harness to post its verdict through the sink; the tool call
@@ -210,8 +214,12 @@ func (s *SessionProvider) Summarize(ctx context.Context, prompt string) (string,
 		return "", err
 	}
 
-	if err := s.sendPrompt(ctx, prompt, "write your one-sentence summary and return it via the summary tool"); err != nil {
+	promptPath, err := s.sendPrompt(ctx, prompt, "write your one-sentence summary and return it via the summary tool")
+	if err != nil {
 		return "", err
+	}
+	if promptPath != "" {
+		defer func() { _ = os.Remove(promptPath) }()
 	}
 
 	// No nudge on a missed tool call: a single attempt is enough for a
@@ -281,25 +289,30 @@ func (s *SessionProvider) prepareTurn(ctx context.Context) error {
 // file for a large one (the same threshold and mechanism Invoke always used).
 // instruction is appended to the file-path message so the harness knows what
 // to do with the file's contents once it reads them (classify-and-verdict for
-// Invoke, summarize-and-submit for Summarize).
-func (s *SessionProvider) sendPrompt(ctx context.Context, prompt, instruction string) error {
+// Invoke, summarize-and-submit for Summarize). When a file was used, its path
+// is returned so the caller can remove it once the harness's turn is actually
+// done — removing it here, immediately after the instruction is typed, races
+// the harness's own Read call, which happens asynchronously as the model
+// processes the turn: SendLine only guarantees the keystrokes were sent, not
+// that the harness has read the file yet.
+func (s *SessionProvider) sendPrompt(ctx context.Context, prompt, instruction string) (string, error) {
 	flat := flattenPrompt(prompt)
 	if len(flat) <= inlinePromptLimit {
 		if err := s.transport.SendLine(flat); err != nil {
-			return fmt.Errorf("provider %s: send prompt: %w", s.name, err)
+			return "", fmt.Errorf("provider %s: send prompt: %w", s.name, err)
 		}
-		return nil
+		return "", nil
 	}
 	promptPath, werr := s.writePromptFile(prompt)
 	if werr != nil {
-		return fmt.Errorf("provider %s: write prompt file: %w", s.name, werr)
+		return "", fmt.Errorf("provider %s: write prompt file: %w", s.name, werr)
 	}
-	defer func() { _ = os.Remove(promptPath) }()
 	msg := fmt.Sprintf("Read the context and instructions from the file %s, then %s.", promptPath, instruction)
 	if err := s.transport.SendLine(msg); err != nil {
-		return fmt.Errorf("provider %s: send prompt instruction: %w", s.name, err)
+		_ = os.Remove(promptPath)
+		return "", fmt.Errorf("provider %s: send prompt instruction: %w", s.name, err)
 	}
-	return nil
+	return promptPath, nil
 }
 
 // finishTurn interrupts the harness's turn (the model may otherwise keep
