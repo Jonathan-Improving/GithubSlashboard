@@ -197,10 +197,56 @@ func summarizeOnce(ctx context.Context, p provider.Provider, prompt string, time
 		return "", false
 	}
 	sentence := extractSummary(raw)
-	if sentence == "" {
+	if sentence == "" || !plausibleSummary(sentence) {
 		return "", false
 	}
 	return sentence, true
+}
+
+// maxPlausibleSummaryLen is a generous cap on a "one short sentence, fit for
+// a desktop notification toast" (TDD 6.9's own phrasing). It exists as a
+// backstop behind extractSummary's "done thinking." cutoff, not a substitute
+// for it: a thinking model that omits the marker, or keeps narrating past it,
+// must never have that narration forwarded to the hook as if it were the
+// summary — the prompt and the model's reasoning about the prompt are for the
+// model's own inference, never for the notification payload (TDD 9.7). A
+// genuine toast sentence is always far under this; a multi-paragraph
+// reasoning trace never is.
+const maxPlausibleSummaryLen = 280
+
+// promptEchoFingerprints are substrings that only appear in Summarize's own
+// instruction text (summaryPrompt) or in a model's narration *about* that
+// instruction, never in a genuine summary sentence about PRs and issues. They
+// are a defense-in-depth check, not the primary defense (the length cap and
+// the "done thinking." cutoff carry that): a real answer has no reason to
+// contain the literal word "constraint" or to talk about "the prompt" itself.
+var promptEchoFingerprints = []string{
+	"desktop notification toast",
+	"constraint 1",
+	"constraint 2",
+	"the prompt asks",
+	"the prompt says",
+	"analyze the request",
+	"analyzing the request",
+}
+
+// plausibleSummary reports whether sentence looks like a genuine one-sentence
+// summary rather than a model's leaked reasoning trace or a verbatim echo of
+// summaryPrompt's own instructions (TDD 9.7). It is intentionally permissive
+// — a false negative here only costs a fallback to the plain non-model
+// string, never a wrong classification — so it need not be exhaustive, only
+// enough to catch the shapes a thinking model's narration actually takes.
+func plausibleSummary(sentence string) bool {
+	if len(sentence) > maxPlausibleSummaryLen {
+		return false
+	}
+	lower := strings.ToLower(sentence)
+	for _, fp := range promptEchoFingerprints {
+		if strings.Contains(lower, fp) {
+			return false
+		}
+	}
+	return true
 }
 
 // logSummarize is Summarize's small logging helper, mirroring provider.Judge's
@@ -217,7 +263,23 @@ func logSummarize(log *slog.Logger, level slog.Level, msg string, p provider.Pro
 // ({"summary": "..."}); a one-shot provider simply echoes back whatever prose
 // it produced. Both are handled: try JSON first, fall back to the trimmed raw
 // text.
+//
+// A "thinking" one-shot model (e.g. GLM-4.7-Flash under Ollama, notify's
+// fallback slot) narrates its reasoning before answering — drafting and
+// revising candidate sentences while echoing the prompt's own instructions
+// back verbatim ("Constraint 1: exactly one short sentence...") — so that
+// narration must never reach the hook payload as if it were the summary
+// itself. This mirrors extractJSON's identical concern on the classification
+// path (provider/parse.go): Ollama's CLI convention emits a literal
+// "...done thinking." line before the real answer, so only the text after it
+// is considered; its absence (a non-thinking model, or the session/Kiro path,
+// which never narrates) falls back to the whole raw text, unchanged from
+// before.
 func extractSummary(raw string) string {
+	if i := strings.LastIndex(raw, "done thinking."); i >= 0 {
+		raw = raw[i+len("done thinking."):]
+	}
+
 	var parsed struct {
 		Summary string `json:"summary"`
 	}

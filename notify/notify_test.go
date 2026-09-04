@@ -95,6 +95,73 @@ func TestSummarizeFallsBackToPlainStringOnError(t *testing.T) {
 	}
 }
 
+// TestExtractSummarySkipsThinkingModelNarration covers TDD 9.7: a "thinking"
+// one-shot model's reasoning trace, which precedes Ollama's own literal
+// "...done thinking." marker, is discarded — only the text after the marker
+// is considered, mirroring extractJSON's identical handling on the
+// classification path (provider/parse.go).
+func TestExtractSummarySkipsThinkingModelNarration(t *testing.T) {
+	raw := "1. Analyze the Request:\n" +
+		"   * Constraint 1: Exactly one short sentence.\n" +
+		"   * Constraint 2: Fit for a desktop notification toast.\n" +
+		"...done thinking.\nValkey PRs are ready: Ruby awaits review and PHP is ready to merge."
+	got := extractSummary(raw)
+	want := "Valkey PRs are ready: Ruby awaits review and PHP is ready to merge."
+	if got != want {
+		t.Errorf("extractSummary = %q, want %q", got, want)
+	}
+}
+
+// TestSummarizeRejectsLeakedPromptNarrationFromFallback is the end-to-end
+// regression for the observed defect: a fallback model that narrates its
+// reasoning about summaryPrompt's own instructions, without ever emitting
+// Ollama's "done thinking." marker, must never have that narration delivered
+// as the notification — Summarize falls back to the plain non-model string
+// instead (TDD 9.7). This is the exact failure mode reported live: the
+// desktop notification showed prompt-echoing reasoning text, not a summary.
+func TestSummarizeRejectsLeakedPromptNarrationFromFallback(t *testing.T) {
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	leaked := "1. Analyze the Request: Two events from GitHub actions. " +
+		"Constraint 1: Exactly one short sentence. Constraint 2: Fit for a " +
+		"desktop notification toast (needs to be concise). The prompt asks " +
+		"to summarize the changes. Let's go with a version that emphasizes " +
+		"the ready for next steps nature."
+	p := fakeSummarizer{err: errors.New("primary unavailable")}
+	fb := fakeSummarizer{out: leaked}
+	got := Summarize(context.Background(), p, fb, changed, time.Second, time.Second, nil)
+	if got != "o/n#1 changed" {
+		t.Errorf("Summarize = %q, want the plain fallback sentence, not the leaked narration", got)
+	}
+	if strings.Contains(got, "Constraint") || strings.Contains(got, "prompt") {
+		t.Errorf("Summarize leaked prompt/reasoning text into the result: %q", got)
+	}
+}
+
+// TestSummarizeRejectsOverlongResponse covers the length-cap backstop in
+// plausibleSummary: even text with no recognizable prompt-echo fingerprint is
+// rejected once it is far longer than a genuine "one short sentence... fit
+// for a desktop notification toast" could plausibly be.
+func TestSummarizeRejectsOverlongResponse(t *testing.T) {
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	p := fakeSummarizer{out: strings.Repeat("word ", 100)}
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
+	if got != "o/n#1 changed" {
+		t.Errorf("Summarize = %q, want the plain fallback sentence for an overlong response", got)
+	}
+}
+
+// TestSummarizeAcceptsGenuineShortSentence is the control case for the two
+// tests above: a real, short summary sentence with no fingerprint and no
+// thinking-trace marker passes through unchanged.
+func TestSummarizeAcceptsGenuineShortSentence(t *testing.T) {
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	p := fakeSummarizer{out: "Valkey PR #295 awaits review feedback."}
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
+	if got != "Valkey PR #295 awaits review feedback." {
+		t.Errorf("Summarize = %q, want the genuine sentence unchanged", got)
+	}
+}
+
 func TestSummarizeFallsBackToPlainStringOnEmptyResponse(t *testing.T) {
 	changed := []Change{
 		{Entity: entityPR, Repo: "o/n", Number: 1},

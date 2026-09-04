@@ -863,3 +863,34 @@ and an issue with no conversation is never sent to the model.
   as a fixed command; sanitization exists for the untrusted content flowing
   through that trusted command, not for the command itself (SCHEMA §
   Notification hook, trust boundary)
+
+### 9.7 A leaked reasoning trace never reaches the hook as the summary
+- **Given** a Summarize call answered by a "thinking" one-shot model (e.g.
+  GLM-4.7-Flash under Ollama, the fallback slot) that narrates its reasoning
+  before answering — drafting and revising candidate sentences, and
+  potentially echoing summaryPrompt's own instructions back verbatim
+  ("Constraint 1: exactly one short sentence...")
+- **When** the response is extracted
+- **Then** Ollama's own CLI convention — a literal `...done thinking.` line
+  preceding the real answer — is used to discard everything before it, the
+  same handling extractJSON already applies on the classification path
+  (provider/parse.go); a response with no such marker (a non-thinking model,
+  or the session/Kiro path, which never narrates) is considered in full,
+  unchanged from before
+- **And** as a backstop behind that cutoff, an extracted candidate is rejected
+  — treated as a failed attempt, not returned — when it is far longer than a
+  genuine "one short sentence... fit for a desktop notification toast" could
+  plausibly be, or when it contains one of a small set of substrings that only
+  appear in the prompt's own instructions or in a model talking about the
+  prompt (e.g. "desktop notification toast", "constraint 1", "the prompt
+  asks") — a real summary sentence has no reason to contain either
+- **And** a rejected candidate degrades exactly like any other failed
+  Summarize attempt (6.9): the fallback provider gets its own attempt if one
+  is configured, and the plain non-model string is used if not — the prompt
+  and a model's reasoning about the prompt are for the model's own inference
+  only, never for the delivered notification, under any failure mode
+- **Note** this is the live-verification-only defect class again
+  (ANTI-PATTERNS #6): notify's extraction had no equivalent of
+  provider/parse.go's thinking-trace handling, and every existing Summarize
+  test used a clean canned response, so the gap passed a fully green suite
+  and was only caught by reading an actual delivered desktop notification

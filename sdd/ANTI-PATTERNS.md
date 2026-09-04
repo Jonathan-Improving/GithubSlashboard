@@ -14,6 +14,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 6 | Trusting unit tests to validate a deterministic fact's plumbing | Medium |
 | 7 | Sharing one timeout bound across two structurally different providers | Medium |
 | 8 | Deleting a handed-off file before the harness's asynchronous read of it | High |
+| 9 | Free-text model output extracted with only TrimSpace, no thinking-trace guard | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -283,3 +284,49 @@ operator directly inspecting the harness's raw transcript, not by any test or
 log analysis — the logged error was truthful ("file not found") and gave no
 hint that the caller's own code had deleted the file that fast — Severity:
 High.
+
+## 9. Free-text model output extracted with only TrimSpace, no thinking-trace guard
+
+**Symptom**: A live desktop notification showed a chunk of a model's step-by-step
+reasoning about the notification prompt itself — restating its own constraints
+("Constraint 1: exactly one short sentence...") — instead of a one-line summary.
+Reported by the operator as "sending the prompt to me as the notification."
+
+**What was tried**: Nothing needed trying — the mechanism was reproducible in one
+shot by piping the exact prompt text notify.go sends into the fallback model
+(`ollama run glm-4.7-flash:latest`) and reading its raw stdout directly.
+
+**Root cause**: notify.Summarize's fallback slot is the same one-shot "thinking"
+model whose narration-before-answering behavior provider/parse.go's `extractJSON`
+already has dedicated handling for on the classification path (search for Ollama's
+own `...done thinking.` convention). `notify.extractSummary` was written
+independently and never got that handling — it only tried a JSON parse, then fell
+back to `strings.TrimSpace` on the *entire* raw response. Every earlier Summarize
+test used a clean canned string, so nothing exercised what a real thinking model's
+stdout actually looks like.
+
+**Resolution**: Give `extractSummary` the same `...done thinking.` cutoff
+`extractJSON` uses, and add a `plausibleSummary` backstop behind it (length cap,
+plus a small set of prompt-echo fingerprint substrings) so a candidate that still
+looks like leaked reasoning — marker present but the model kept narrating past it,
+or the marker absent entirely — is rejected as a failed attempt rather than
+returned, falling through to the fallback provider or the plain non-model string
+exactly as any other Summarize failure does.
+
+**Lesson**: A one-shot "thinking" model's raw-stdout quirk is a property of the
+*model*, not of the call site — every extraction function reading that model's
+output needs the same guard, and adding a second call site (here, a summary
+prompt, distinct from the classification prompt `extractJSON` was built for)
+without carrying the guard along re-opens a bug that was already fixed once
+elsewhere in the same codebase. When two functions parse output from the same
+kind of model, that handling belongs in one place both can reach, or each new
+call site needs an explicit reminder to check whether the existing handling
+already covers its case.
+
+**Cost**: Live in production notifications for an unknown number of prior runs
+before the operator noticed and reported it (the log evidence shows the fallback
+path — and therefore this extraction code — firing on essentially every run this
+session, each one a chance to leak). Severity: Medium (cosmetic/confusing, not a
+data-integrity defect — the underlying classification and store were never
+affected, only the best-effort notification text).
+
