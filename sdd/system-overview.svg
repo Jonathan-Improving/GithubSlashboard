@@ -6,9 +6,11 @@
     .ext   { fill: #e6eef7; stroke: #4a6fa5; stroke-width: 1.5; }
     .store { fill: #eef7ee; stroke: #4a8a5a; stroke-width: 1.5; }
     .out   { fill: #f7f2e6; stroke: #a5894a; stroke-width: 1.5; }
+    .hook  { fill: #f7e6f2; stroke: #a54a8a; stroke-width: 1.5; }
     .lbl   { fill: #1a1a1a; }
     .sub   { fill: #55555f; font-size: 11px; }
     .edge  { stroke: #6a6a75; stroke-width: 1.5; fill: none; }
+    .edgedash { stroke: #6a6a75; stroke-width: 1.5; fill: none; stroke-dasharray: 4 3; }
     .edgelbl { fill: #55555f; font-size: 10px; }
     @media (prefers-color-scheme: dark) {
       .panel { fill: #26262b; stroke: #55555f; }
@@ -16,9 +18,11 @@
       .ext   { fill: #2b3a4d; stroke: #8fb4e0; }
       .store { fill: #2b3d2f; stroke: #8fca9a; }
       .out   { fill: #3d3626; stroke: #cdb277; }
+      .hook  { fill: #3d2b3a; stroke: #cd8fc0; }
       .lbl   { fill: #f2f2f4; }
       .sub   { fill: #b0b0b8; }
       .edge  { stroke: #9a9aa5; }
+      .edgedash { stroke: #9a9aa5; }
       .edgelbl { fill: #b0b0b8; }
     }
   </style>
@@ -71,6 +75,16 @@
   <text class="lbl" x="850" y="352" text-anchor="middle">.md</text>
   <text class="sub" x="850" y="370" text-anchor="middle">status doc</text>
 
+  <!-- notification hook -->
+  <rect class="hook" x="410" y="330" width="170" height="70" rx="6"/>
+  <text class="lbl" x="495" y="354" text-anchor="middle">Notification hook</text>
+  <text class="sub" x="495" y="372" text-anchor="middle">changed items -&gt; summary</text>
+  <text class="sub" x="495" y="386" text-anchor="middle">(best-effort, optional)</text>
+
+  <!-- notify command (external) -->
+  <rect class="ext" x="650" y="420" width="140" height="40" rx="6"/>
+  <text class="lbl" x="720" y="443" text-anchor="middle">Notify command</text>
+
   <!-- edges -->
   <!-- scheduler -> acquisition -->
   <path class="edge" d="M160 70 H285 V195" marker-end="url(#a)"/>
@@ -91,6 +105,15 @@
   <text class="edgelbl" x="707" y="300">read</text>
   <!-- renderer -> markdown -->
   <path class="edge" d="M770 360 H810" marker-end="url(#a)"/>
+  <!-- classification -> notification hook (which items changed this run) -->
+  <path class="edgedash" d="M495 280 V330" marker-end="url(#a)"/>
+  <text class="edgelbl" x="502" y="308">changed?</text>
+  <!-- notification hook -> provider (summary sentence, reuses the same provider) -->
+  <path class="edgedash" d="M410 365 H320 V110 H410" marker-end="url(#a)"/>
+  <text class="edgelbl" x="325" y="240">summary</text>
+  <!-- notification hook -> notify command -->
+  <path class="edgedash" d="M580 385 H620 V440 H650" marker-end="url(#a)"/>
+  <text class="edgelbl" x="588" y="400">JSON on stdin</text>
 
   <defs>
     <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">

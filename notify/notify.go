@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Jonathan-Improving/githubslashboard/model"
 	"github.com/Jonathan-Improving/githubslashboard/provider"
@@ -21,6 +22,17 @@ import (
 
 // Change is one open PR or issue that required a fresh judgment this run
 // (SCHEMA § `change`).
+//
+// Repo/Number/URL/Role/Bucket/Action/Priority are deterministic, code-derived
+// values. Companion is model-generated text ultimately derived from
+// GitHub-sourced content the operator does not control (PR titles,
+// descriptions, comments, issue text — some written by other people). It is
+// sanitized (sanitizeText) before Fire builds the payload, stripping the
+// characters that enable command substitution or chaining — a downstream
+// consumer that blindly forwards this field to a shell or `eval` cannot use
+// it to run an arbitrary command. Quotes are preserved as ordinary prose, so
+// a consumer building its own notification call is still expected to quote
+// this field correctly (SCHEMA § Notification hook, trust boundary).
 type Change struct {
 	Entity    string `json:"entity"`
 	Repo      string `json:"repo"`
@@ -34,7 +46,9 @@ type Change struct {
 }
 
 // Payload is the JSON object written to the hook command's stdin
-// (SCHEMA § Notification hook § Payload).
+// (SCHEMA § Notification hook § Payload). Summary is model-generated text
+// subject to the same untrusted-string-data caution as Change.Companion — see
+// Change's doc comment.
 type Payload struct {
 	Summary string   `json:"summary"`
 	Changed []Change `json:"changed"`
@@ -111,6 +125,16 @@ func fallbackSummary(changed []Change) string {
 // summaryPrompt renders the changed set into the plain prompt text handed to
 // Provider.Summarize (TDD 6.9): a short instruction plus a compact per-item
 // listing, deliberately not the full Request/Events shape classification uses.
+//
+// Each item's Companion note is sanitized (sanitizeText) before it goes into
+// the prompt, not just at the payload boundary in Fire — the same
+// GitHub-sourced content that could carry command-injection metacharacters
+// could equally carry prompt-injection text aimed at steering the summary
+// call itself, so the dangerous characters are removed on the way in as well
+// as on the way out. This is a preventative measure layered on top of Fire's
+// output sanitization (TDD 9.6), not a substitute for it: Fire still
+// sanitizes summary/companion again regardless of what the provider returns,
+// since a provider is free to reintroduce characters this prompt never had.
 func summaryPrompt(changed []Change) string {
 	var b strings.Builder
 	b.WriteString("Write exactly one short sentence (fit for a desktop notification toast) summarizing the following changes to GitHub pull requests and issues. Do not list every item verbatim; synthesize. Return only the sentence, no quotes or preamble.\n\n")
@@ -120,7 +144,7 @@ func summaryPrompt(changed []Change) string {
 			b.WriteString(" action=" + c.Action)
 		}
 		if c.Companion != "" {
-			b.WriteString(" note=\"" + c.Companion + "\"")
+			b.WriteString(" note=\"" + sanitizeText(c.Companion) + "\"")
 		}
 		b.WriteString("\n")
 	}
@@ -164,6 +188,101 @@ func extractSummary(raw string) string {
 	return trimmed
 }
 
+// sanitizeText strips every character outside the known-safe shape of a
+// hook-payload text field — natural language plus emoji — before the value
+// ever reaches JSON, so a downstream consumer that blindly forwards the
+// payload to a shell, `eval`, or another interpreter cannot be tricked into
+// command injection (CWE-78) no matter how carelessly it handles the string.
+// Documenting the trust boundary (SCHEMA § Notification hook) is necessary but
+// not sufficient — this function is what actually removes the dangerous
+// characters, deterministically, because both fields it applies to have a
+// known, closed shape: model-generated natural-language prose, optionally
+// with emoji, never code of any kind.
+//
+// The allowlist is Unicode letters, marks (for accented/combining scripts),
+// digits, spaces, ordinary prose punctuation (via unicode.IsPunct, MINUS a
+// fixed denylist of the characters that actually enable command injection —
+// backtick, $, backslash, semicolon, pipe, ampersand, angle brackets, and
+// every bracket/brace/parenthesis), and emoji (including their joiner/modifier
+// companions). Single and double quotes are deliberately NOT stripped: they
+// are ordinary, extremely common prose characters (contractions, quoted
+// phrases, possessives), and on their own — with command substitution,
+// chaining, and redirection already removed — a lone quote cannot invoke a
+// command; it can only break out of a downstream consumer's own quoting if
+// that consumer built a second shell string carelessly, which is a defect in
+// that consumer's own quoting discipline, not something this sanitizer can or
+// should paper over. A rune outside the allowlist is dropped, not replaced or
+// escaped, so the result can never reconstruct a metacharacter through
+// escaping tricks.
+func sanitizeText(s string) string {
+	const dangerousPunctuation = "`$\\;|&<>(){}[]"
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case isEmojiJoiner(r), isEmojiRune(r):
+			// Emoji first and unconditionally: several emoji ranges overlap
+			// Unicode's Symbol/Punctuation categories, so classifying emoji
+			// before the general punctuation/symbol check below means an
+			// emoji is never accidentally caught by the dangerous-set test.
+			b.WriteRune(r)
+		case unicode.IsLetter(r), unicode.IsMark(r), unicode.IsDigit(r), unicode.IsSpace(r):
+			b.WriteRune(r)
+		case (unicode.IsPunct(r) || unicode.IsSymbol(r)) && !strings.ContainsRune(dangerousPunctuation, r):
+			b.WriteRune(r)
+		}
+		// Anything else — control characters, the dangerous punctuation set,
+		// and any rune not covered above — is silently dropped, not escaped:
+		// an escaped metacharacter is still a metacharacter to a second
+		// interpreter that applies its own unescaping.
+	}
+	return b.String()
+}
+
+// isEmojiJoiner and isEmojiRune classify the combining/joining companions and
+// base glyphs of a single emoji, mirroring provider's emoji validation
+// (provider/parse.go) — duplicated here deliberately rather than exported,
+// since this is a small, stable Unicode range table and notify has no other
+// reason to depend on provider's internals.
+func isEmojiJoiner(r rune) bool {
+	switch {
+	case r == 0x200D: // zero-width joiner
+		return true
+	case r >= 0xFE00 && r <= 0xFE0F: // variation selectors
+		return true
+	case r >= 0x1F3FB && r <= 0x1F3FF: // skin-tone modifiers
+		return true
+	default:
+		return false
+	}
+}
+
+func isEmojiRune(r rune) bool {
+	switch {
+	case r >= 0x1F300 && r <= 0x1FAFF: // Misc Symbols & Pictographs, Emoticons, Transport, etc.
+		return true
+	case r >= 0x2600 && r <= 0x27BF: // Misc Symbols + Dingbats
+		return true
+	case r >= 0x2300 && r <= 0x23FF: // Misc Technical
+		return true
+	case r >= 0x25A0 && r <= 0x25FF: // Geometric Shapes
+		return true
+	case r >= 0x2190 && r <= 0x21FF: // Arrows
+		return true
+	case r >= 0x2B00 && r <= 0x2BFF: // Misc Symbols and Arrows
+		return true
+	case r == 0x203C || r == 0x2049:
+		return true
+	case r >= 0x2122 && r <= 0x2139:
+		return true
+	case r >= 0x1F000 && r <= 0x1F02F: // Mahjong/dominoes-adjacent pictographs
+		return true
+	case r >= 0x1F1E6 && r <= 0x1F1FF: // regional indicators (flags)
+		return true
+	default:
+		return false
+	}
+}
+
 // Fire builds the payload from changed and summary, and — only when changed is
 // non-empty (TDD 9.1) and hookCmd is non-empty (TDD 9.4) — writes it as JSON to
 // the hook command's stdin, bounded by timeout. Any failure (bad command,
@@ -173,7 +292,16 @@ func Fire(ctx context.Context, hookCmd string, timeout time.Duration, changed []
 	if len(changed) == 0 || hookCmd == "" {
 		return nil
 	}
-	payload := Payload{Summary: summary, Changed: changed}
+	// Sanitize every free-text field at the payload boundary, deterministically
+	// removing shell/code metacharacters (TDD 9.6) — this is what makes the
+	// guarantee real for a downstream consumer that blindly forwards these
+	// values, not just documentation asking implementers to be careful.
+	sanitized := make([]Change, len(changed))
+	for i, c := range changed {
+		c.Companion = sanitizeText(c.Companion)
+		sanitized[i] = c
+	}
+	payload := Payload{Summary: sanitizeText(summary), Changed: sanitized}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal notify payload: %w", err)

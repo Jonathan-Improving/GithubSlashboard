@@ -16,7 +16,7 @@ change in front of you.
 | 6 | Provider / LLM hand-off | 6.1 – 6.10 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
-| 9 | Notification hook | 9.1 – 9.5 |
+| 9 | Notification hook | 9.1 – 9.6 |
 
 ## Configurable constants referenced below
 
@@ -665,3 +665,35 @@ and an issue with no conversation is never sent to the model.
 - **Then** the tool logs it and continues — the status document has already
   been written by this point, and a broken notification integration must never
   be the thing that breaks the dashboard
+
+### 9.6 The payload's model-derived text is sanitized to natural language, never left as potential code
+- **Given** the notification payload (9.3), whose `summary` and every
+  `change.companion` are model-generated text ultimately traceable back to
+  GitHub content the operator does not control (a PR title, description,
+  comment, or issue body, potentially written by someone else)
+- **When** the tool builds the payload
+- **Then** both fields are stripped of every character outside natural-language
+  prose and emoji before the payload is marshaled — Unicode letters, marks,
+  digits, spaces, and ordinary punctuation (including quotes and apostrophes)
+  are kept; the characters that actually enable command substitution or
+  chaining (backtick, `$`, `\`, `;`, `|`, `&`, angle brackets, every
+  bracket/brace/parenthesis) and control characters are dropped, not escaped
+- **And** quotes are deliberately preserved rather than stripped: they are
+  ordinary prose, and with substitution/chaining already removed, a lone
+  quote cannot invoke a command on its own — a downstream consumer is
+  expected to quote these fields correctly when building its own notification
+  call, standard shell-scripting discipline rather than a special burden
+- **And** this makes the guarantee real for the characters that matter most:
+  a downstream consumer that blindly forwards the JSON to a shell, `eval`, or
+  another interpreter cannot be tricked into command substitution or command
+  chaining, because those characters are structurally absent from the string
+- **And** the same sanitization is applied preventatively on the way in, too:
+  a companion note is sanitized before it becomes part of the prompt text
+  sent to the provider for the summary call, not only after the provider
+  responds — narrowing the prompt-injection surface a crafted GitHub comment
+  could exploit to steer that call, on top of (not instead of) sanitizing
+  whatever the provider ultimately returns
+- **And** `GSB_NOTIFY_HOOK` itself is trusted operator configuration, invoked
+  as a fixed command; sanitization exists for the untrusted content flowing
+  through that trusted command, not for the command itself (SCHEMA §
+  Notification hook, trust boundary)

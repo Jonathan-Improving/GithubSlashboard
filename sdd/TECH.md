@@ -2,12 +2,14 @@
 
 ## System overview
 
-![System overview: a scheduler triggers acquisition, which reads pull requests, issues, and their event trails from GitHub; classification applies deterministic floors and consults an LLM provider subprocess to judge open-item status from the event trail; results persist to a YAML source of truth holding !pr and !issue documents, which a pure renderer turns into the Markdown status document.](system-overview.svg)
+![System overview: a scheduler triggers acquisition, which reads pull requests, issues, and their event trails from GitHub; classification applies deterministic floors and consults an LLM provider subprocess to judge open-item status from the event trail; results persist to a YAML source of truth holding !pr and !issue documents, which a pure renderer turns into the Markdown status document; when at least one item needed a fresh judgment this run, an optional notification hook asks the same provider for a one-sentence summary and delivers a JSON payload to a configured external command.](system-overview.svg)
 
 GithubSlashboard is a single-shot command-line program written in Go. One
-invocation runs a linear pipeline — acquire → classify → persist → render — then
-exits. It holds no long-lived process and no server. See PRODUCT.md for what the
-product is and why.
+invocation runs a linear pipeline — acquire → classify → persist → render →
+notify — then exits. The notify step is optional and best-effort: it fires
+only when at least one item needed a fresh judgment this run, and a failure
+there never fails the pipeline. It holds no long-lived process and no server.
+See PRODUCT.md for what the product is and why.
 
 ## Third-party components
 
@@ -93,6 +95,22 @@ this build does not recognize is round-tripped verbatim (TDD 2.5, 8.7).
 Operator-set fields survive re-runs (TDD 2.2). For the document field reference,
 see SCHEMA.md.
 
+**Notification hook (optional, outbound).** After classification, `notify`
+collects every open PR/issue that reached the provider for a fresh judgment
+this run and, when that set is non-empty, asks the same provider for a short
+summary sentence (`Summarize` — a distinct, simpler contract than per-item
+judgment, TDD 6.9) and writes a JSON payload to the stdin of a configured
+external command (`GSB_NOTIFY_HOOK`), bounded by a timeout. This is the one
+outbound integration point beyond GitHub reads and the provider call, and it
+is deliberately the last thing the pipeline does — after the status document
+is already written, so a failing or slow hook never blocks or corrupts the
+dashboard's own output (TDD 9.5). Every model-derived field in the payload is
+sanitized to a closed natural-language-plus-emoji character set before it is
+used, both when it enters the summary prompt and again at the payload
+boundary, so a downstream consumer that blindly forwards the JSON to a shell
+cannot be tricked into command injection by adversarial GitHub content
+(TDD 9.6). Unconfigured, the mechanism is entirely inert.
+
 ## Module responsibilities
 
 | Module | Responsibility |
@@ -105,6 +123,7 @@ see SCHEMA.md.
 | `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink. A second, simpler contract (`Summarize`) produces the notification hook's summary sentence — a plain prompt in, a plain string out, no vocabulary to validate, no retry loop (TDD 6.9); the session provider's sink offers its verdict and summary tools mutually exclusively per turn, switching which one is advertised before each call rather than exposing both at once (TDD 6.10). Kiro CLI is the MVP harness. |
 | `store` | Owns the YAML source of truth: read, validate, merge (preserving operator-set state), and write `!pr` and `!issue` documents, preserving unrecognized tags verbatim. |
 | `render` | Pure function from the store to the Markdown status document; owns the layout that reproduces the established structure and the issues sections appended below it. |
+| `notify` | Owns the notification hook: collects the open PRs/issues that reached the provider for a fresh judgment this run, asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
 | `schedule` | Platform seam for unattended execution (launchd/cron artifacts) and for resolving the host's conventional per-user data directory; isolated so the core carries no OS-specific dependency. |
 
 ## Concurrency model
@@ -129,4 +148,8 @@ classification checks out a free session, uses it, and returns it. A single sess
 serializes its own turns (a mutex), while the pool provides the cross-session
 parallelism; this is what keeps a large classify within its scheduled window. There
 is no shared mutable state across the pipeline stages — each stage consumes the
-prior stage's output and produces the next stage's input.
+prior stage's output and produces the next stage's input. The notification
+hook, when it fires, runs after render as one final sequential step — it is
+not part of the classify stage's fan-out and makes at most one additional
+provider call (the summary) plus one hook subprocess, both bounded by their
+own timeouts.

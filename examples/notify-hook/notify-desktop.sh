@@ -39,6 +39,12 @@ print(len(data.get("changed", [])))
 
 title="GithubSlashboard ($changed_count changed)"
 
+# $summary is untrusted string data (model-generated text ultimately derived
+# from GitHub content the operator does not control — see SCHEMA.md's
+# Notification hook trust boundary). It is passed below as a single quoted
+# argument to each notifier, never eval'd or interpolated into a re-parsed
+# shell/AppleScript string — that distinction is what keeps a crafted PR
+# comment from ever becoming a command.
 if command -v terminal-notifier >/dev/null 2>&1; then
   # macOS
   terminal-notifier -title "$title" -message "$summary"

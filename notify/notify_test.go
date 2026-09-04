@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,4 +191,179 @@ func TestFireFailureIsNonFatal(t *testing.T) {
 	}
 	// Reaching this line at all is the assertion: Fire returned control to the
 	// caller instead of aborting the process.
+}
+
+// TestFireDeliversAdversarialContentAsDataNotCode covers TDD 9.6: a companion
+// note and summary containing shell metacharacters, command substitution, and
+// quote-breaking sequences — the shape of text a maliciously crafted GitHub PR
+// comment could produce once fed through the model — must be stripped of
+// those metacharacters before the payload is ever built, so even a downstream
+// consumer that blindly forwards the JSON to a shell/eval cannot be tricked
+// into command injection. The hook command here is deliberately a fixed,
+// harmless probe; if the adversarial content ever reached the command line
+// instead of being sanitized away, it would execute and the captured
+// proof-file would exist.
+func TestFireDeliversAdversarialContentAsDataNotCode(t *testing.T) {
+	proof, err := os.CreateTemp("", "gsb-notify-proof-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	proofPath := proof.Name()
+	proof.Close()
+	os.Remove(proofPath) // must NOT be recreated by the adversarial payload
+
+	capture, err := os.CreateTemp("", "gsb-notify-capture-*.json")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	capture.Close()
+	defer os.Remove(capture.Name())
+
+	adversarial := "note`touch " + proofPath + "` and $(touch " + proofPath + ") and \"; touch " + proofPath + " #"
+	changed := []Change{
+		{Entity: entityPR, Repo: "o/n", Number: 1, Companion: adversarial},
+	}
+	summary := "summary`touch " + proofPath + "`"
+
+	hookCmd := "cat > " + capture.Name()
+	if err := Fire(context.Background(), hookCmd, 2*time.Second, changed, summary); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+
+	if _, err := os.Stat(proofPath); err == nil {
+		t.Fatal("adversarial content in Companion/summary executed as a command — sanitization must remove metacharacters before the payload is built (TDD 9.6)")
+	}
+
+	raw, err := os.ReadFile(capture.Name())
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	var got Payload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("captured stdin did not parse as JSON — adversarial content corrupted the payload: %v (raw=%s)", err, raw)
+	}
+	// The sanitized companion/summary must contain none of the dangerous
+	// characters from the original adversarial string.
+	for _, dangerous := range []string{"`", "$", "(", ")", ";"} {
+		if strings.Contains(got.Changed[0].Companion, dangerous) {
+			t.Errorf("sanitized companion %q still contains dangerous character %q", got.Changed[0].Companion, dangerous)
+		}
+		if strings.Contains(got.Summary, dangerous) {
+			t.Errorf("sanitized summary %q still contains dangerous character %q", got.Summary, dangerous)
+		}
+	}
+	// The safe prose content must still be present.
+	if !strings.Contains(got.Changed[0].Companion, "note") || !strings.Contains(got.Changed[0].Companion, "and") {
+		t.Errorf("sanitized companion %q lost its safe prose content", got.Changed[0].Companion)
+	}
+}
+
+func TestSanitizeTextPreservesNaturalLanguageAndEmoji(t *testing.T) {
+	in := "3 PRs need review 🚀 — café résumé naïve, done!"
+	got := sanitizeText(in)
+	if got != in {
+		t.Errorf("sanitizeText altered safe natural-language text (accented letters and em dash should pass): got %q, want %q", got, in)
+	}
+}
+
+func TestSanitizeTextStripsShellMetacharacters(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"a`b`c", "abc"},
+		{"a$(b)c", "abc"},
+		{"a;b|c&d", "abcd"},
+		{"a<b>c", "abc"},
+		{`a\b`, "ab"},
+		{"a{b}c[d]e", "abcde"},
+	}
+	for _, tc := range cases {
+		got := sanitizeText(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSanitizeTextPreservesQuotesAndApostrophes(t *testing.T) {
+	// Quotes are ordinary prose (contractions, quoted phrases, possessives)
+	// and are not stripped: on their own, with command substitution/chaining
+	// already removed, a lone quote cannot invoke a command — see
+	// sanitizeText's doc comment for the reasoning.
+	in := `don't say "hello" — it's fine`
+	got := sanitizeText(in)
+	if got != in {
+		t.Errorf("sanitizeText altered quotes/apostrophes: got %q, want %q", got, in)
+	}
+}
+
+func TestSanitizeTextStripsControlCharacters(t *testing.T) {
+	in := "hello\x00\x01\x1bworld"
+	got := sanitizeText(in)
+	if got != "helloworld" {
+		t.Errorf("sanitizeText did not strip control characters: got %q", got)
+	}
+}
+
+func TestFireSanitizesBeforeBuildingPayload(t *testing.T) {
+	// A more direct unit check than the adversarial-execution test above:
+	// confirms the specific field-level transformation Fire applies.
+	tmp, err := os.CreateTemp("", "gsb-notify-sanitize-*.json")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1, Companion: "fix `rm -rf /`"}}
+	hookCmd := "cat > " + tmp.Name()
+	if err := Fire(context.Background(), hookCmd, time.Second, changed, "ok $(whoami)"); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	raw, _ := os.ReadFile(tmp.Name())
+	var got Payload
+	json.Unmarshal(raw, &got)
+	if got.Changed[0].Companion != "fix rm -rf /" {
+		t.Errorf("companion = %q, want sanitized %q", got.Changed[0].Companion, "fix rm -rf /")
+	}
+	if got.Summary != "ok whoami" {
+		t.Errorf("summary = %q, want sanitized %q", got.Summary, "ok whoami")
+	}
+}
+
+// TestSummaryPromptSanitizesCompanionOnTheWayIn covers the preventative half
+// of TDD 9.6: a companion note carrying dangerous characters is sanitized
+// before it ever becomes part of the prompt text sent to the provider, not
+// only sanitized after the provider responds. This reduces the chance the
+// model's own response needs sanitizing at all, and narrows the
+// prompt-injection surface a crafted GitHub comment could exploit to steer
+// the summary call.
+func TestSummaryPromptSanitizesCompanionOnTheWayIn(t *testing.T) {
+	changed := []Change{
+		{Entity: entityPR, Repo: "o/n", Number: 1, Bucket: "open", Companion: "note`rm -rf /`and $(whoami)"},
+	}
+	prompt := summaryPrompt(changed)
+	// Scope the check to the per-item line the Companion was interpolated
+	// into, not the whole prompt — the fixed instructional preamble is
+	// developer-authored trusted text and legitimately contains parentheses.
+	lines := strings.Split(prompt, "\n")
+	var itemLine string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "- ") {
+			itemLine = l
+			break
+		}
+	}
+	if itemLine == "" {
+		t.Fatalf("no item line found in prompt: %s", prompt)
+	}
+	for _, dangerous := range []string{"`", "$", "(", ")"} {
+		if strings.Contains(itemLine, dangerous) {
+			t.Errorf("item line still contains dangerous character %q: %s", dangerous, itemLine)
+		}
+	}
+	if !strings.Contains(itemLine, "note") || !strings.Contains(itemLine, "and") {
+		t.Errorf("item line lost the safe prose content: %s", itemLine)
+	}
 }

@@ -445,6 +445,33 @@ failure to start is logged and does not fail the run — the status document has
 already been written by this point, and a broken notification integration must
 never be the thing that breaks the dashboard (TDD 9.5).
 
+**Trust boundary**: `summary` and every `change.companion` are model-generated
+text ultimately derived from GitHub-sourced content the operator does not
+control — PR titles, descriptions, comments, issue text — some of it written by
+other people. Both fields are sanitized before the payload is built: every
+character outside natural-language prose (Unicode letters, marks, digits,
+spaces, ordinary punctuation) and emoji is stripped, deterministically removing
+the characters that actually enable command injection — backtick, `$`,
+backslash, `;`, `|`, `&`, angle brackets, and every bracket/brace/parenthesis —
+before they ever reach JSON. Single and double quotes are deliberately not
+stripped: they are ordinary prose (contractions, quoted phrases, possessives),
+and with command substitution/chaining already removed, a lone quote cannot
+invoke a command on its own — a downstream consumer is expected to quote these
+fields correctly when building its own notification call, which is standard
+shell-scripting discipline, not a special burden this payload creates. This is
+enforced by the tool itself (`notify.sanitizeText`) for everything that *can* be
+removed without cost to ordinary usability: a consumer that blindly forwards
+these fields to a shell, `eval`, or another interpreter cannot be tricked into
+command *substitution or chaining*, because those characters are never present
+in the string to begin with. `GSB_NOTIFY_HOOK` itself is trusted operator
+configuration (invoked as a fixed command line, the same trust level as
+`GSB_PROVIDER_CMD`) — sanitization exists for the untrusted content flowing
+*through* that trusted command, not for the command itself. Sanitization also
+runs preventatively, before a companion note becomes part of the prompt sent
+to the provider for the summary call — narrowing the same GitHub-sourced
+content's prompt-injection surface on the way in, on top of (not instead of)
+sanitizing whatever the provider ultimately returns on the way out.
+
 ### Payload (to the hook's stdin)
 
 | Field | Type | Required | Description |
