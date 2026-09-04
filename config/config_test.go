@@ -38,7 +38,6 @@ func TestLoadOverrides(t *testing.T) {
 		EnvStorePath:         "/tmp/s.yaml",
 		EnvOutputPath:        "/tmp/o.md",
 		EnvStaleAgeThreshold: "24h",
-		EnvProviderCommand:   "grok chat --stdin",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -48,9 +47,6 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if c.StaleAgeThreshold != 24*time.Hour {
 		t.Errorf("stale threshold = %s", c.StaleAgeThreshold)
-	}
-	if len(c.ProviderCommand) != 3 || c.ProviderCommand[0] != "grok" {
-		t.Errorf("provider command = %v", c.ProviderCommand)
 	}
 }
 
@@ -63,36 +59,81 @@ func TestLoadBadDuration(t *testing.T) {
 	}
 }
 
-func TestProviderKindDefaultAndOverride(t *testing.T) {
+func TestProviderModelDefaultAndOverride(t *testing.T) {
 	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok"}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.ProviderKind != DefaultProviderKind {
-		t.Errorf("default provider kind = %q, want %q", c.ProviderKind, DefaultProviderKind)
+	if c.Model != DefaultProviderModel {
+		t.Errorf("default model = %q, want %q", c.Model, DefaultProviderModel)
 	}
 
 	c, err = Load(fakeEnv(map[string]string{
-		EnvGitHubToken:  "tok",
-		EnvProviderKind: string(ProviderKindOneShot),
+		EnvGitHubToken:   "tok",
+		EnvProviderModel: "glm-4.7-flash",
 	}))
 	if err != nil {
-		t.Fatalf("Load oneshot: %v", err)
+		t.Fatalf("Load with model override: %v", err)
 	}
-	if c.ProviderKind != ProviderKindOneShot {
-		t.Errorf("provider kind = %q, want oneshot", c.ProviderKind)
+	if c.Model != "glm-4.7-flash" {
+		t.Errorf("model = %q, want glm-4.7-flash", c.Model)
 	}
 }
 
-func TestProviderKindInvalid(t *testing.T) {
-	if _, err := Load(fakeEnv(map[string]string{
-		EnvGitHubToken:  "tok",
-		EnvProviderKind: "bogus",
-	})); err == nil {
-		t.Error("invalid provider kind should error")
+func TestFallbackProviderUnsetByDefault(t *testing.T) {
+	// TDD 6.13: an unset fallback means today's exhaustion-to-unverified
+	// behavior, unchanged.
+	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	if _, err := ParseProviderKind("bogus"); err == nil {
-		t.Error("ParseProviderKind should reject an out-of-set value")
+	if c.FallbackProvider != "" || c.FallbackModel != "" {
+		t.Errorf("fallback should default unset, got provider=%q model=%q", c.FallbackProvider, c.FallbackModel)
+	}
+}
+
+func TestFallbackProviderOverride(t *testing.T) {
+	// TDD 6.12: the fallback slot takes a name and model, symmetric with the
+	// primary — the same two knobs, just under the GSB_FALLBACK_* names.
+	c, err := Load(fakeEnv(map[string]string{
+		EnvGitHubToken:           "tok",
+		EnvFallbackProvider:      "ollama",
+		EnvFallbackProviderModel: "glm-4.7-flash",
+	}))
+	if err != nil {
+		t.Fatalf("Load with fallback: %v", err)
+	}
+	if c.FallbackProvider != "ollama" {
+		t.Errorf("fallback provider = %q, want ollama", c.FallbackProvider)
+	}
+	if c.FallbackModel != "glm-4.7-flash" {
+		t.Errorf("fallback model = %q, want glm-4.7-flash", c.FallbackModel)
+	}
+}
+
+func TestFallbackProviderTimeoutDefaultAndOverride(t *testing.T) {
+	// TDD 6.17: the fallback gets its own timeout, distinct from and by
+	// default longer than the primary's.
+	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.FallbackProviderTimeout != DefaultFallbackProviderTimeout {
+		t.Errorf("default fallback provider timeout = %s, want %s", c.FallbackProviderTimeout, DefaultFallbackProviderTimeout)
+	}
+	if c.FallbackProviderTimeout <= c.ProviderTimeout {
+		t.Errorf("default fallback timeout (%s) should exceed the primary's (%s)", c.FallbackProviderTimeout, c.ProviderTimeout)
+	}
+
+	c, err = Load(fakeEnv(map[string]string{
+		EnvGitHubToken:             "tok",
+		EnvFallbackProviderTimeout: "5m",
+	}))
+	if err != nil {
+		t.Fatalf("Load with fallback timeout override: %v", err)
+	}
+	if c.FallbackProviderTimeout != 5*time.Minute {
+		t.Errorf("fallback provider timeout = %s, want 5m", c.FallbackProviderTimeout)
 	}
 }
 

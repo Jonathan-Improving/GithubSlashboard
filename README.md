@@ -1,8 +1,12 @@
 # GithubSlashboard
 
+![Splash](assets/splash.png "Sample Output")
+
 A read-only GitHub dashboard generator that turns your pull requests and issues
 into a single, always-current Markdown status document — using a language model to
 read each item's history and report its *real* status, not just its stale flags.
+
+Read the output in your favourite Markdown editor, I recommend [Scribobulate](https://github.com/MadMartian/Scribobulate) for a pleasant experience including automatic reload.
 
 ## What it does
 
@@ -82,7 +86,10 @@ below at any location you prefer.
 | YAML store path | `GSB_STORE_PATH` | `-store` | `<data dir>/prs.pr.yaml` |
 | Read-only GitHub token | `GITHUB_TOKEN` | — | _(required)_ |
 | Provider selection | `GSB_PROVIDER` | — | `kiro` |
-| Provider strategy | `GSB_PROVIDER_KIND` | — | `session` |
+| Provider model | `GSB_PROVIDER_MODEL` | — | `glm-5` |
+| Fallback provider selection | `GSB_FALLBACK_PROVIDER` | — | _(unset — no fallback)_ |
+| Fallback provider model | `GSB_FALLBACK_PROVIDER_MODEL` | — | _(provider's own default)_ |
+| Fallback provider timeout | `GSB_FALLBACK_PROVIDER_TIMEOUT` | — | `270s` |
 | Infer notes for settled items | `GSB_CLASSIFY_FLOOR_NOTES` | — | `true` (merged/closed PRs and closed issues get notes) |
 | Re-crawl settled items already in the store | `GSB_INCLUDE_TERMINAL` | `-include-terminal` | `false` (skip them, reuse cached record) |
 | PR stale age threshold | `GSB_STALE_AGE_THRESHOLD` | — | `960h` (40 days) |

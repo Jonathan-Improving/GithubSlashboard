@@ -12,6 +12,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 4 | Over-tight companion word bounds reject valid classifications | Medium |
 | 5 | Advertising a status the response vocabulary cannot satisfy | Medium |
 | 6 | Trusting unit tests to validate a deterministic fact's plumbing | Medium |
+| 7 | Sharing one timeout bound across two structurally different providers | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -192,3 +193,39 @@ believing it, and mine each live defect for the fixture it reveals.
 **Cost**: Two separate defects, each costing a ~5-minute live run to detect plus a
 diagnostic pass, both after a fully green suite. Each would have shipped
 undetected — Severity: Medium.
+
+## 7. Sharing one timeout bound across two structurally different providers
+
+**Symptom**: A live run with a fallback provider configured behaved exactly as
+designed — primary exhausted, fallback invoked fresh — but every fallback attempt
+still ended in `unverified`, logged as a timeout rather than a validation failure.
+
+**What was tried**:
+- Hypothesized the primary itself was timing out and simply needed a longer bound
+  applied everywhere. Checked the log first: no primary timeout occurred: all of
+  the primary's failures were content-validation errors, answered well within
+  budget. Only the fallback timed out, on every attempt.
+- Ran the fallback model directly against a prompt smaller than a real event
+  trail. It took 77 seconds wall-clock — already close to the shared 90-second
+  bound before accounting for a full-size real prompt.
+
+**Root cause**: The primary (a session-based harness) and the fallback (a
+one-shot local model) were bound by the same single timeout value. The value was
+sized for the primary's response profile; the fallback's genuinely different
+profile — slower per call on this hardware/model — had no bound of its own to be
+sized correctly, so it inherited a number that was never chosen with it in mind.
+
+**Resolution**: Give the fallback its own independently configured timeout,
+distinct from the primary's, defaulting to a multiple of it. Leave the primary's
+own bound untouched, so an ordinary hung primary session still fails over at its
+existing speed.
+
+**Lesson**: When two structurally different backends sit behind one interface,
+a shared numeric bound (timeout, retry cap, size limit) is an assumption that one
+of them was sized for — verify it against both, not just the one it was
+originally tuned for, before trusting it to serve either.
+
+**Cost**: One live run's classify phase (~5 minutes) spent entirely on repeated
+fallback timeouts, plus a round of log analysis and a direct manual timing test to
+separate "primary hung" from "fallback is just slower than budgeted" before the
+real, narrower fix was implemented and re-verified live — Severity: Medium.

@@ -222,6 +222,77 @@ func TestCIFailingPersists(t *testing.T) {
 	}
 }
 
+// TestProviderPersists covers TDD 6.16: the provenance field always round-trips
+// through the store, distinguishing a primary-judged record from a
+// fallback-judged one exactly as CIFailing distinguishes a red build from a
+// green one.
+func TestProviderPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prs.pr.yaml")
+	created := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	s := &Store{}
+	s.Merge([]model.PR{
+		{
+			Repo: "a/x", Number: 1, Title: "Judged by primary", URL: "u1",
+			Role: model.RoleSubmitter, Created: created, LastActivity: created,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
+			Priority: model.PriorityNeutral, Provider: model.ProviderSourcePrimary,
+		},
+		{
+			Repo: "a/x", Number: 2, Title: "Judged by fallback", URL: "u2",
+			Role: model.RoleSubmitter, Created: created, LastActivity: created,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
+			Priority: model.PriorityNeutral, Provider: model.ProviderSourceFallback,
+		},
+	})
+
+	if err := s.Write(path); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	back, err := Read(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if back.PRs[0].Provider != model.ProviderSourcePrimary {
+		t.Errorf("provider = %q, want primary", back.PRs[0].Provider)
+	}
+	if back.PRs[1].Provider != model.ProviderSourceFallback {
+		t.Errorf("provider = %q, want fallback", back.PRs[1].Provider)
+	}
+
+	// The field must appear explicitly in the raw YAML — never omitted, unlike
+	// ci_failing/unverified's omitempty convention (TDD 6.16: Option B, always
+	// disclose).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if got := strings.Count(string(raw), "provider:"); got != 2 {
+		t.Errorf("found %d \"provider:\" lines in the raw store, want 2 (one per PR, never omitted)", got)
+	}
+}
+
+// TestProviderRejectsInvalidValue covers the flip side of the pre-migration
+// tolerance: an empty provider is accepted (a record written before the field
+// existed), but a non-empty value outside the closed set is not.
+func TestProviderRejectsInvalidValue(t *testing.T) {
+	pr := model.PR{
+		Repo: "a/x", Number: 1, Role: model.RoleSubmitter,
+		Bucket: model.BucketOpen, Priority: model.PriorityNeutral,
+		Provider: model.ProviderSource("bogus"),
+	}
+	if err := validatePR(pr); err == nil {
+		t.Error("validatePR should reject an out-of-set provider value")
+	}
+
+	pr.Provider = ""
+	if err := validatePR(pr); err != nil {
+		t.Errorf("validatePR should accept an empty provider (pre-migration record), got %v", err)
+	}
+}
+
 // TestIssueOperatorStaleSurvivesRefresh covers the operator-set state guarantee
 // for issues (TDD 8.7 referencing 2.3): a fresh classification that does not
 // carry the override must not erase it.

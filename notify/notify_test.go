@@ -69,7 +69,7 @@ func TestChangesFromPRsEmptyWhenNoneJudged(t *testing.T) {
 func TestSummarizeReturnsProviderSentence(t *testing.T) {
 	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
 	p := fakeSummarizer{out: `{"summary":"1 PR needs review"}`}
-	got := Summarize(context.Background(), p, changed, time.Second)
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
 	if got != "1 PR needs review" {
 		t.Errorf("Summarize = %q, want the parsed sentence", got)
 	}
@@ -78,28 +78,30 @@ func TestSummarizeReturnsProviderSentence(t *testing.T) {
 func TestSummarizeAcceptsRawTextResponse(t *testing.T) {
 	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
 	p := fakeSummarizer{out: "1 PR needs review"}
-	got := Summarize(context.Background(), p, changed, time.Second)
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
 	if got != "1 PR needs review" {
 		t.Errorf("Summarize = %q, want the raw text trimmed", got)
 	}
 }
 
-func TestSummarizeFallsBackOnError(t *testing.T) {
+func TestSummarizeFallsBackToPlainStringOnError(t *testing.T) {
+	// No fallback provider configured (nil): a primary failure with no
+	// fallback goes straight to the plain non-model string (TDD 6.9, 6.13).
 	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
 	p := fakeSummarizer{err: errors.New("provider unavailable")}
-	got := Summarize(context.Background(), p, changed, time.Second)
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
 	if got != "o/n#1 changed" {
 		t.Errorf("Summarize fallback = %q, want the single-item fallback sentence", got)
 	}
 }
 
-func TestSummarizeFallsBackOnEmptyResponse(t *testing.T) {
+func TestSummarizeFallsBackToPlainStringOnEmptyResponse(t *testing.T) {
 	changed := []Change{
 		{Entity: entityPR, Repo: "o/n", Number: 1},
 		{Entity: entityIssue, Repo: "o/n", Number: 2},
 	}
 	p := fakeSummarizer{out: "   "}
-	got := Summarize(context.Background(), p, changed, time.Second)
+	got := Summarize(context.Background(), p, nil, changed, time.Second, time.Second, nil)
 	if got != "2 items changed" {
 		t.Errorf("Summarize fallback = %q, want the multi-item fallback sentence", got)
 	}
@@ -107,10 +109,58 @@ func TestSummarizeFallsBackOnEmptyResponse(t *testing.T) {
 
 func TestSummarizeSkippedWhenNoChanges(t *testing.T) {
 	p := fakeSummarizer{out: "should not be called"}
-	got := Summarize(context.Background(), p, nil, time.Second)
+	got := Summarize(context.Background(), p, nil, nil, time.Second, time.Second, nil)
 	if got != "" {
 		t.Errorf("Summarize with no changes = %q, want empty (never call the provider for nothing)", got)
 	}
+}
+
+func TestSummarizeTriesFallbackWhenPrimaryFails(t *testing.T) {
+	// TDD 6.15: a Summarize fallback uses the same trigger rule as
+	// classification, applied to Summarize's own single-attempt shape.
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	p := fakeSummarizer{err: errors.New("primary unavailable")}
+	fb := fakeSummarizer{out: "1 PR needs review"}
+	got := Summarize(context.Background(), p, fb, changed, time.Second, time.Second, nil)
+	if got != "1 PR needs review" {
+		t.Errorf("Summarize = %q, want the fallback's sentence", got)
+	}
+}
+
+func TestSummarizeFallsBackToPlainStringWhenFallbackAlsoFails(t *testing.T) {
+	// TDD 6.14 (Summarize's equivalent): both attempts fail, so the plain
+	// non-model string is used, exactly as if no fallback were configured.
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	p := fakeSummarizer{err: errors.New("primary unavailable")}
+	fb := fakeSummarizer{err: errors.New("fallback unavailable too")}
+	got := Summarize(context.Background(), p, fb, changed, time.Second, time.Second, nil)
+	if got != "o/n#1 changed" {
+		t.Errorf("Summarize = %q, want the plain fallback sentence", got)
+	}
+}
+
+func TestSummarizeNeverTriesFallbackWhenPrimarySucceeds(t *testing.T) {
+	// A configured fallback must not be touched at all when the primary
+	// succeeds — prove it by making the fallback panic if called.
+	changed := []Change{{Entity: entityPR, Repo: "o/n", Number: 1}}
+	p := fakeSummarizer{out: "1 PR needs review"}
+	fb := panicSummarizer{}
+	got := Summarize(context.Background(), p, fb, changed, time.Second, time.Second, nil)
+	if got != "1 PR needs review" {
+		t.Errorf("Summarize = %q, want the primary's sentence", got)
+	}
+}
+
+// panicSummarizer fails the test loudly if Summarize is ever called on it,
+// proving a configured fallback is never touched while the primary succeeds.
+type panicSummarizer struct{}
+
+func (panicSummarizer) Name() string { return "panic" }
+func (panicSummarizer) Invoke(ctx context.Context, req provider.Request, correction string) (string, error) {
+	panic("Invoke should never be called on panicSummarizer")
+}
+func (panicSummarizer) Summarize(ctx context.Context, prompt string) (string, error) {
+	panic("Summarize should never be called when the primary already succeeded")
 }
 
 func TestFireSkippedWhenNoChanges(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -154,22 +155,61 @@ func summaryPrompt(changed []Change) string {
 // Summarize asks p for a one-sentence summary of changed, falling back to a
 // plain non-model string on any error or empty result (TDD 6.9) — Summarize
 // deliberately does not retry, so this is the caller's proportionate response
-// to a single failed attempt.
-func Summarize(ctx context.Context, p provider.Provider, changed []Change, timeout time.Duration) string {
+// to a single failed attempt. fallback (may be nil), when p's own single
+// attempt fails, gets its own single attempt before the plain-string fallback
+// (TDD 6.15) — the same trigger rule as classification's Judge, applied to
+// Summarize's own simpler, non-retrying shape. timeout bounds p's call;
+// fallbackTimeout bounds fallback's call independently (TDD 6.17), mirroring
+// Judge's own primary/fallback timeout split. log, when non-nil, records the
+// outcome (TDD 6.16): WARN when p fails and fallback will be tried, INFO when
+// fallback succeeds, ERROR when fallback also fails (or none is configured).
+func Summarize(ctx context.Context, p, fallback provider.Provider, changed []Change, timeout, fallbackTimeout time.Duration, log *slog.Logger) string {
 	if len(changed) == 0 {
 		return ""
 	}
+	prompt := summaryPrompt(changed)
+
+	if sentence, ok := summarizeOnce(ctx, p, prompt, timeout); ok {
+		return sentence
+	}
+
+	if fallback == nil {
+		logSummarize(log, slog.LevelError, "summarize: primary failed, no fallback configured", p)
+		return fallbackSummary(changed)
+	}
+	logSummarize(log, slog.LevelWarn, "summarize: primary failed, trying fallback", p)
+
+	if sentence, ok := summarizeOnce(ctx, fallback, prompt, fallbackTimeout); ok {
+		logSummarize(log, slog.LevelInfo, "summarize: fallback succeeded", fallback)
+		return sentence
+	}
+	logSummarize(log, slog.LevelError, "summarize: fallback also failed", fallback)
+	return fallbackSummary(changed)
+}
+
+// summarizeOnce makes p's single bounded Summarize attempt, reporting whether
+// it produced a usable sentence.
+func summarizeOnce(ctx context.Context, p provider.Provider, prompt string, timeout time.Duration) (string, bool) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	raw, err := p.Summarize(callCtx, summaryPrompt(changed))
+	raw, err := p.Summarize(callCtx, prompt)
 	if err != nil {
-		return fallbackSummary(changed)
+		return "", false
 	}
 	sentence := extractSummary(raw)
 	if sentence == "" {
-		return fallbackSummary(changed)
+		return "", false
 	}
-	return sentence
+	return sentence, true
+}
+
+// logSummarize is Summarize's small logging helper, mirroring provider.Judge's
+// (a nil log is a no-op).
+func logSummarize(log *slog.Logger, level slog.Level, msg string, p provider.Provider) {
+	if log == nil {
+		return
+	}
+	log.Log(context.Background(), level, msg, "provider", p.Name())
 }
 
 // extractSummary pulls the sentence out of the provider's raw response. A

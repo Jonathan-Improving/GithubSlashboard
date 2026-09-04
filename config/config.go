@@ -14,43 +14,6 @@ import (
 	"github.com/Jonathan-Improving/githubslashboard/schedule"
 )
 
-// ProviderKind is the closed set of provider invocation strategies (POLICY: a
-// closed set of values is a typed enum parsed once at the boundary). It selects
-// how the pluggable provider is driven, independent of which model backs it.
-type ProviderKind string
-
-const (
-	// ProviderKindOneShot spawns a fresh subprocess per request and delivers the
-	// prompt on stdin (Ollama-style, and any backend cheap to start). Simple and
-	// stateless, but pays full process startup on every call.
-	ProviderKindOneShot ProviderKind = "oneshot"
-
-	// ProviderKindSession keeps one long-lived interactive harness session and
-	// reuses it for every request, resetting context between requests. It
-	// amortizes the heavy startup cost of agent harnesses (Kiro/Claude/Grok)
-	// across all PRs in a run (TDD 6.7).
-	ProviderKindSession ProviderKind = "session"
-)
-
-// ParseProviderKind maps a configured string to a ProviderKind, rejecting any
-// value outside the closed set (POLICY: validated once at the boundary).
-func ParseProviderKind(s string) (ProviderKind, error) {
-	switch ProviderKind(s) {
-	case ProviderKindOneShot:
-		return ProviderKindOneShot, nil
-	case ProviderKindSession:
-		return ProviderKindSession, nil
-	default:
-		return "", fmt.Errorf("unknown provider kind %q, want %q or %q",
-			s, ProviderKindOneShot, ProviderKindSession)
-	}
-}
-
-// Valid reports whether k is a member of the closed set.
-func (k ProviderKind) Valid() bool {
-	return k == ProviderKindOneShot || k == ProviderKindSession
-}
-
 // Default constant values (TDD § Configurable constants referenced below).
 const (
 	// DefaultCompanionWordsMin / Max bound inferred companion prose (TDD 4.5).
@@ -79,14 +42,23 @@ const (
 	// DefaultProviderTimeout bounds a single provider subprocess call (TDD 6.5).
 	DefaultProviderTimeout = 90 * time.Second
 
+	// DefaultFallbackProviderTimeout bounds a single fallback provider call
+	// independently of the primary's own timeout (TDD 6.17). Set higher than
+	// DefaultProviderTimeout: live verification against real prompts (not
+	// synthetic ones) showed a one-shot local-model fallback (Ollama) can
+	// legitimately take well over 90s per call, while the primary's own
+	// timeout must stay tight to fail over promptly on a genuinely hung
+	// session. Three times the primary's default gives real headroom without
+	// making a stuck fallback block a run indefinitely.
+	DefaultFallbackProviderTimeout = 3 * DefaultProviderTimeout
+
 	// DefaultProvider is the MVP provider selection (TDD 6.1).
 	DefaultProvider = "kiro"
 
-	// DefaultProviderKind is the default provider invocation strategy. A heavy
-	// CLI agent harness (Kiro/Claude/Grok) pays a large fixed startup cost per
-	// process, so the default reuses one long-lived session (TDD 6.7); a simple
-	// one-shot backend (Ollama-style) can be selected explicitly.
-	DefaultProviderKind = ProviderKindSession
+	// DefaultProviderModel is used when neither GSB_PROVIDER_MODEL nor
+	// GSB_FALLBACK_PROVIDER_MODEL is set, preserving today's pinned model for a
+	// deployment that does not configure one explicitly (TDD 6.12).
+	DefaultProviderModel = "glm-5"
 
 	// DefaultProviderReadyTimeout bounds how long a session provider waits for
 	// the harness to become interactive after launch before giving up.
@@ -145,18 +117,20 @@ func DefaultOutputPath() string {
 
 // Environment variable names (no magic strings in logic).
 const (
-	EnvGitHubToken            = "GITHUB_TOKEN"
-	EnvProvider               = "GSB_PROVIDER"
-	EnvProviderKind           = "GSB_PROVIDER_KIND"
-	EnvProviderCommand        = "GSB_PROVIDER_CMD"
-	EnvStorePath              = "GSB_STORE_PATH"
-	EnvOutputPath             = "GSB_OUTPUT_PATH"
-	EnvStaleAgeThreshold      = "GSB_STALE_AGE_THRESHOLD"
-	EnvIssueStaleAgeThreshold = "GSB_ISSUE_STALE_AGE_THRESHOLD"
-	EnvClassifyFloorNotes     = "GSB_CLASSIFY_FLOOR_NOTES"
-	EnvIncludeTerminal        = "GSB_INCLUDE_TERMINAL"
-	EnvNotifyHook             = "GSB_NOTIFY_HOOK"
-	EnvNotifyTimeout          = "GSB_NOTIFY_TIMEOUT"
+	EnvGitHubToken             = "GITHUB_TOKEN"
+	EnvProvider                = "GSB_PROVIDER"
+	EnvProviderModel           = "GSB_PROVIDER_MODEL"
+	EnvFallbackProvider        = "GSB_FALLBACK_PROVIDER"
+	EnvFallbackProviderModel   = "GSB_FALLBACK_PROVIDER_MODEL"
+	EnvFallbackProviderTimeout = "GSB_FALLBACK_PROVIDER_TIMEOUT"
+	EnvStorePath               = "GSB_STORE_PATH"
+	EnvOutputPath              = "GSB_OUTPUT_PATH"
+	EnvStaleAgeThreshold       = "GSB_STALE_AGE_THRESHOLD"
+	EnvIssueStaleAgeThreshold  = "GSB_ISSUE_STALE_AGE_THRESHOLD"
+	EnvClassifyFloorNotes      = "GSB_CLASSIFY_FLOOR_NOTES"
+	EnvIncludeTerminal         = "GSB_INCLUDE_TERMINAL"
+	EnvNotifyHook              = "GSB_NOTIFY_HOOK"
+	EnvNotifyTimeout           = "GSB_NOTIFY_TIMEOUT"
 )
 
 // Config is the validated runtime configuration for one invocation.
@@ -165,19 +139,31 @@ type Config struct {
 	// carried in memory only for the duration of the run.
 	GitHubToken string
 
-	// Provider selects the LLM backend (e.g. "kiro"). ProviderCommand, when
-	// set, is the argv[0..] of a custom command provider (TDD 6.2); when empty
-	// the provider default command is used. ProviderKind selects the invocation
-	// strategy — a fresh subprocess per call (oneshot) or one reused long-lived
-	// harness session (session) (TDD 6.7).
-	Provider        string
-	ProviderKind    ProviderKind
-	ProviderCommand []string
-	ProviderTimeout time.Duration
+	// Provider selects the primary LLM backend by name (e.g. "kiro", "ollama").
+	// Model selects the model within that name's fixed kind (TDD 6.11, 6.12) —
+	// there is no ProviderKind or raw-command field: the invocation kind is
+	// derived solely from Provider's name (provider.KindForName), and the
+	// harness/subprocess shape is fixed per name, parameterized only by Model.
+	Provider string
+	Model    string
 
-	// ProviderReadyTimeout bounds startup of a session-kind harness; only used
-	// when ProviderKind is session. ProviderIdleSettle is the quiet window that
-	// confirms a session response is complete.
+	// FallbackProvider and FallbackModel describe the fallback slot, built
+	// through the identical construction path as the primary (TDD 6.12).
+	// FallbackProvider empty means no fallback is configured — the current
+	// unverified-after-exhaustion behavior is unchanged (TDD 6.13).
+	FallbackProvider string
+	FallbackModel    string
+
+	ProviderTimeout time.Duration
+	// FallbackProviderTimeout bounds a fallback call independently of the
+	// primary's own ProviderTimeout (TDD 6.17) — see DefaultFallbackProviderTimeout
+	// for why the two must not share one value.
+	FallbackProviderTimeout time.Duration
+
+	// ProviderReadyTimeout bounds startup of a session-kind harness. Applies to
+	// whichever slot (primary or fallback) is session kind by name.
+	// ProviderIdleSettle is the quiet window that confirms a session response
+	// is complete.
 	ProviderReadyTimeout time.Duration
 	ProviderIdleSettle   time.Duration
 
@@ -223,21 +209,22 @@ type Config struct {
 // token and any environment overrides are layered on by Load.
 func Default() Config {
 	return Config{
-		Provider:               DefaultProvider,
-		ProviderKind:           DefaultProviderKind,
-		ProviderTimeout:        DefaultProviderTimeout,
-		ProviderReadyTimeout:   DefaultProviderReadyTimeout,
-		ProviderIdleSettle:     DefaultProviderIdleSettle,
-		CompanionWordsMin:      DefaultCompanionWordsMin,
-		CompanionWordsMax:      DefaultCompanionWordsMax,
-		LLMRetryCap:            DefaultLLMRetryCap,
-		StaleAgeThreshold:      DefaultStaleAgeThreshold,
-		IssueStaleAgeThreshold: DefaultIssueStaleAgeThreshold,
-		ClassifyWorkers:        DefaultClassifyWorkers,
-		SkipFloorNotes:         DefaultClassifySkipFloorNotes,
-		StorePath:              DefaultStorePath(),
-		OutputPath:             DefaultOutputPath(),
-		NotifyTimeout:          DefaultNotifyTimeout,
+		Provider:                DefaultProvider,
+		Model:                   DefaultProviderModel,
+		ProviderTimeout:         DefaultProviderTimeout,
+		ProviderReadyTimeout:    DefaultProviderReadyTimeout,
+		ProviderIdleSettle:      DefaultProviderIdleSettle,
+		CompanionWordsMin:       DefaultCompanionWordsMin,
+		CompanionWordsMax:       DefaultCompanionWordsMax,
+		LLMRetryCap:             DefaultLLMRetryCap,
+		StaleAgeThreshold:       DefaultStaleAgeThreshold,
+		IssueStaleAgeThreshold:  DefaultIssueStaleAgeThreshold,
+		ClassifyWorkers:         DefaultClassifyWorkers,
+		SkipFloorNotes:          DefaultClassifySkipFloorNotes,
+		StorePath:               DefaultStorePath(),
+		OutputPath:              DefaultOutputPath(),
+		NotifyTimeout:           DefaultNotifyTimeout,
+		FallbackProviderTimeout: DefaultFallbackProviderTimeout,
 	}
 }
 
@@ -252,12 +239,21 @@ func Load(getenv func(string) string) (Config, error) {
 	if v := getenv(EnvProvider); v != "" {
 		c.Provider = v
 	}
-	if v := getenv(EnvProviderKind); v != "" {
-		kind, err := ParseProviderKind(v)
+	if v := getenv(EnvProviderModel); v != "" {
+		c.Model = v
+	}
+	if v := getenv(EnvFallbackProvider); v != "" {
+		c.FallbackProvider = v
+	}
+	if v := getenv(EnvFallbackProviderModel); v != "" {
+		c.FallbackModel = v
+	}
+	if v := getenv(EnvFallbackProviderTimeout); v != "" {
+		d, err := time.ParseDuration(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("%s: %w", EnvProviderKind, err)
+			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvFallbackProviderTimeout, v, err)
 		}
-		c.ProviderKind = kind
+		c.FallbackProviderTimeout = d
 	}
 	if v := getenv(EnvStorePath); v != "" {
 		c.StorePath = v
@@ -278,9 +274,6 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvIssueStaleAgeThreshold, v, err)
 		}
 		c.IssueStaleAgeThreshold = d
-	}
-	if v := getenv(EnvProviderCommand); v != "" {
-		c.ProviderCommand = splitFields(v)
 	}
 	if v := getenv(EnvClassifyFloorNotes); v != "" {
 		b, err := strconv.ParseBool(v)
@@ -328,9 +321,6 @@ func (c Config) Validate() error {
 	if c.Provider == "" {
 		return fmt.Errorf("provider selection is empty")
 	}
-	if !c.ProviderKind.Valid() {
-		return fmt.Errorf("provider kind %q is invalid", c.ProviderKind)
-	}
 	if c.ProviderReadyTimeout <= 0 {
 		return fmt.Errorf("provider ready timeout must be positive, got %s", c.ProviderReadyTimeout)
 	}
@@ -356,6 +346,9 @@ func (c Config) Validate() error {
 	if c.ProviderTimeout <= 0 {
 		return fmt.Errorf("provider timeout must be positive, got %s", c.ProviderTimeout)
 	}
+	if c.FallbackProviderTimeout <= 0 {
+		return fmt.Errorf("fallback provider timeout must be positive, got %s", c.FallbackProviderTimeout)
+	}
 	if c.ClassifyWorkers < 1 {
 		return fmt.Errorf("classify workers must be >= 1, got %d", c.ClassifyWorkers)
 	}
@@ -369,26 +362,4 @@ func (c Config) Validate() error {
 		return fmt.Errorf("notify timeout must be positive when a notify hook is configured, got %s", c.NotifyTimeout)
 	}
 	return nil
-}
-
-// splitFields splits a command string on whitespace. It is deliberately simple
-// (no shell quoting) because the provider command is operator-supplied config,
-// not untrusted input, and complex quoting belongs in an explicit list form.
-func splitFields(s string) []string {
-	var out []string
-	cur := ""
-	for _, r := range s {
-		if r == ' ' || r == '\t' {
-			if cur != "" {
-				out = append(out, cur)
-				cur = ""
-			}
-			continue
-		}
-		cur += string(r)
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
 }

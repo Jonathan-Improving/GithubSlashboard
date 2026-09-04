@@ -39,11 +39,27 @@ func ParseResponse(raw string, c Constraints) (Response, error) {
 	return resp, nil
 }
 
-// extractJSON pulls the JSON object body out of raw provider output. It accepts
-// a ```json fenced block, a bare ``` fenced block, or a plain object, and takes
-// the first complete brace-balanced object it finds so surrounding prose does
-// not break parsing.
+// extractJSON pulls the JSON object body out of raw provider output. It
+// accepts a ```json fenced block, a bare ``` fenced block, or a plain object.
+//
+// A "thinking" model (e.g. GLM-4.7-Flash under Ollama) narrates its reasoning
+// before answering, and that narration is not reliably parseable as
+// candidate JSON text: it can draft and revise a scratch answer, echo the
+// prompt's own "respond with a fenced ```json object" instruction back
+// verbatim, or write a malformed template example (e.g. demonstrating an
+// events-array entry) whose internal quoting desyncs a brace/quote scanner
+// for everything that follows. Ollama's own CLI convention for such models
+// emits a literal "...done thinking." line before the real answer; when
+// present, only the text after it is searched, which sidesteps the
+// reasoning trace's unreliable quoting entirely rather than trying to parse
+// through it. Its absence (e.g. the one-shot Kiro path, which never
+// narrates) falls back to searching the whole output, unchanged from
+// before.
 func extractJSON(raw string) (string, error) {
+	if i := strings.LastIndex(raw, "done thinking."); i >= 0 {
+		raw = raw[i+len("done thinking."):]
+	}
+
 	s := raw
 	if i := strings.Index(s, "```"); i >= 0 {
 		rest := s[i+3:]
@@ -60,15 +76,22 @@ func extractJSON(raw string) (string, error) {
 		s = rest
 	}
 
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return "", fmt.Errorf("no JSON object found in provider output")
-	}
+	// Scan forward once, recording the span of every complete top-level object
+	// (one whose '{' brings depth from 0 to 1 and whose matching '}' returns
+	// it to 0), and take the LAST one found — the model can produce more than
+	// one candidate object even after the thinking-trace cutoff above (e.g. a
+	// one-line example preceding its real answer), and the real answer is
+	// always the last complete one.
+	var lastStart, lastEnd int = -1, -1
 	depth := 0
 	inStr := false
 	esc := false
-	for i := start; i < len(s); i++ {
+	curStart := -1
+	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if depth == 0 {
+			inStr, esc = false, false
+		}
 		if inStr {
 			switch {
 			case esc:
@@ -84,15 +107,24 @@ func extractJSON(raw string) (string, error) {
 		case '"':
 			inStr = true
 		case '{':
+			if depth == 0 {
+				curStart = i
+			}
 			depth++
 		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1], nil
+			if depth > 0 {
+				depth--
+				if depth == 0 && curStart >= 0 {
+					lastStart, lastEnd = curStart, i
+					curStart = -1
+				}
 			}
 		}
 	}
-	return "", fmt.Errorf("no complete JSON object found in provider output")
+	if lastStart < 0 {
+		return "", fmt.Errorf("no complete JSON object found in provider output")
+	}
+	return s[lastStart : lastEnd+1], nil
 }
 
 // isLangTag reports whether a fence's first line looks like a language tag

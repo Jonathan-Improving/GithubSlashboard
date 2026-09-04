@@ -132,6 +132,15 @@ func validatePR(pr model.PR) error {
 	if !pr.Priority.Valid() {
 		return fmt.Errorf("invalid priority %q", pr.Priority)
 	}
+	// Provider is empty only on a record written before this field existed
+	// (pre-migration); such a record is not rejected — Merge treats an empty
+	// value as needing no special handling, and the classifier always sets it
+	// on the next fresh judgment. Any non-empty value must be a member of the
+	// closed set, though: an empty string is the one documented exception to
+	// "always explicit" (TDD 6.16), not a license for garbage.
+	if pr.Provider != "" && !pr.Provider.Valid() {
+		return fmt.Errorf("invalid provider %q", pr.Provider)
+	}
 	switch pr.Bucket {
 	case model.BucketOpen:
 		if pr.Action != "" && !pr.Action.Valid() {
@@ -163,6 +172,11 @@ func validateIssue(iss model.Issue) error {
 	}
 	if !iss.Priority.Valid() {
 		return fmt.Errorf("invalid priority %q", iss.Priority)
+	}
+	// See validatePR: empty is the pre-migration exception, not a license for
+	// an arbitrary value.
+	if iss.Provider != "" && !iss.Provider.Valid() {
+		return fmt.Errorf("invalid provider %q", iss.Provider)
 	}
 	switch iss.Bucket {
 	case model.IssueBucketOpen:

@@ -19,41 +19,39 @@ trail. Everything else — fetching, the immutable merged/closed floors, the
 deterministic flags, persistence, rendering — is plain code that runs without a
 model. The provider is only asked for the judgment that genuinely needs one.
 
-Two invocation strategies sit behind one interface, selected with
-`GSB_PROVIDER_KIND`.
+A provider is selected by **name** (`GSB_PROVIDER`), not by a separate strategy
+setting: each name has exactly one invocation strategy, fixed in code, so a name
+can never be paired with the wrong strategy. There is also no raw-command
+override for either strategy — the argv for a given name is fixed, parameterized
+only by the model you choose (`GSB_PROVIDER_MODEL`).
 
-### `oneshot` — start here
+### `ollama` — start here
 
-A fresh subprocess per item. The prompt goes in on stdin, the reply comes back on
-stdout. Any CLI that reads a prompt and prints a response works, which makes this
-the easiest way to get a first run out of the tool.
-
-```bash
-export GSB_PROVIDER_KIND=oneshot
-export GSB_PROVIDER_CMD="ollama run llama3.2"
-```
-
-`GSB_PROVIDER_CMD` is split on whitespace; the first word is the executable and the
-rest are fixed leading arguments. There is no shell involved, so quoting and pipes
-are not interpreted.
-
-The trade-off is process startup: every item pays it. For a local model that starts
-in milliseconds this is irrelevant. For a heavyweight agent harness that takes
-several seconds to boot, it dominates the run.
-
-### `session` — for heavyweight harnesses
-
-One long-lived interactive harness, reused across every item, so its startup cost is
-paid once. This is the default, because the reference provider is an agent CLI with
-exactly that cost profile.
+A fresh subprocess per item (`ollama run <model>`). The prompt goes in on stdin,
+the reply comes back on stdout. This is the easiest way to get a first run out of
+the tool, since it needs nothing beyond a local Ollama install and a pulled model.
 
 ```bash
-export GSB_PROVIDER_KIND=session   # the default
-export GSB_PROVIDER=kiro
+export GSB_PROVIDER=ollama
+export GSB_PROVIDER_MODEL=llama3.2
 ```
 
-A session provider is more involved than a one-shot, and worth understanding before
-choosing it:
+The trade-off is process startup: every item pays it. For a small local model this
+is usually irrelevant.
+
+### `kiro` — for the heavyweight harness
+
+One long-lived interactive harness, reused across every item, so its startup cost
+is paid once. This is the default, because the reference provider is an agent CLI
+with exactly that cost profile.
+
+```bash
+export GSB_PROVIDER=kiro          # the default
+export GSB_PROVIDER_MODEL=glm-5   # the default
+```
+
+A session-strategy provider is more involved than a one-shot, and worth
+understanding before choosing it:
 
 - It hosts the harness inside a **`tmux`** session, so `tmux` must be installed.
 - Each item's event trail is handed over **by file**, not typed into the session — a
@@ -72,28 +70,57 @@ Concurrency works by running a pool of independent sessions, since one harness
 serves one request at a time. The pool is sized to the classifier's worker limit,
 which is a compiled default rather than a configurable setting.
 
+### Fallback provider
+
+A second provider slot, built through the identical path as the primary, can be
+configured to catch what the primary misses — most usefully, a session harness
+that degrades mid-run (a bad or empty response, a timeout) rather than a
+systematic problem. The fallback is invoked only after the primary's own retry
+budget is fully exhausted, from a fresh attempt — never interleaved with the
+primary's own attempts.
+
+```bash
+export GSB_FALLBACK_PROVIDER=ollama
+export GSB_FALLBACK_PROVIDER_MODEL=llama3.2
+```
+
+Leaving `GSB_FALLBACK_PROVIDER` unset (the default) disables the fallback
+entirely — a row whose primary attempts are all exhausted is marked
+`⚠️ unverified`, exactly as it always was.
+
+The fallback has its own timeout (`GSB_FALLBACK_PROVIDER_TIMEOUT`, default three
+times the primary's), independent of the primary's own — a one-shot fallback
+backed by a local model can legitimately need longer per call than a
+session-based primary, so the two must not share one bound. Every persisted
+item states plainly which slot produced its current judgment (`provider:
+primary` or `provider: fallback` in the YAML store) — never left implicit.
+
 ### Provider-related settings
 
 | Setting | Environment variable | Default |
 |---------|----------------------|---------|
 | Provider selection | `GSB_PROVIDER` | `kiro` |
-| Invocation strategy | `GSB_PROVIDER_KIND` | `session` |
-| Explicit command (argv) | `GSB_PROVIDER_CMD` | provider default |
+| Provider model | `GSB_PROVIDER_MODEL` | `glm-5` |
+| Fallback provider selection | `GSB_FALLBACK_PROVIDER` | _(unset — no fallback)_ |
+| Fallback provider model | `GSB_FALLBACK_PROVIDER_MODEL` | provider's own default |
+| Fallback provider timeout | `GSB_FALLBACK_PROVIDER_TIMEOUT` | `270s` |
 
 Whatever the strategy, every call is bounded by a timeout and a bounded
 self-correcting retry: a response that fails validation is quoted back to the model
 once or twice, and a call that keeps failing or times out yields a row marked
-`⚠️ unverified` rather than stalling the run or inventing a status.
+`⚠️ unverified` rather than stalling the run or inventing a status — unless a
+fallback is configured and rescues it first.
 
-### Writing your own provider
+### Adding a new provider name
 
-The interface has two methods: classify one item (take a request, return raw
-text) and summarize a set of changes (take a plain prompt, return a plain
-sentence — see [Notification hook](#notification-hook) below). Adding a
-backend means supplying an argv, not writing code. If a CLI can read a prompt
-and print a JSON object, `GSB_PROVIDER_CMD` is all it needs. See
-`sdd/SCHEMA.md` for the exact request and response contracts, and
-`sdd/TECH.md` for where the boundary sits.
+Adding a provider name means adding one entry to the closed name-to-strategy
+mapping and, for a one-shot name, a small argv builder parameterized by model —
+not exposing a new configuration surface. See `sdd/SCHEMA.md`'s Provider
+construction section for the exact contract, and `sdd/TECH.md` for where the
+boundary sits. The classification interface itself has two methods: classify one
+item (take a request, return raw text) and summarize a set of changes (take a
+plain prompt, return a plain sentence — see [Notification hook](#notification-hook)
+below); `sdd/SCHEMA.md` documents the exact request and response shapes.
 
 ---
 
@@ -122,8 +149,8 @@ runnable example that turns the payload into a real desktop notification
 ```bash
 go build ./...
 export GITHUB_TOKEN=...              # read-only token
-export GSB_PROVIDER_KIND=oneshot
-export GSB_PROVIDER_CMD="ollama run llama3.2"
+export GSB_PROVIDER=ollama
+export GSB_PROVIDER_MODEL=llama3.2
 ./githubslashboard -verbose
 ```
 

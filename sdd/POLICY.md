@@ -79,14 +79,20 @@ Run these in order after every change; a change is not complete until all pass:
   inference may reclassify a merged or closed-unmerged PR (TDD 4.1, 4.2). Enforce
   this in code, independent of provider output.
 - **The provider is pluggable and never core.** All model access goes through the
-  provider interface. Two invocation strategies are supported and selected by
-  config (`provider_kind`): a **one-shot** provider spawns a fresh subprocess per
-  request and delivers the prompt on stdin (Ollama-style, and any cheap-to-start
-  backend); a **session** provider keeps one long-lived interactive harness and
-  reuses it across all PRs, amortizing the harness's heavy startup cost (Kiro,
-  Claude, Grok). Core logic must not couple to any specific harness — the harness
-  executable, its arguments, and its reset command are config-driven, so a new
-  harness drops in without core changes.
+  provider interface. Two invocation strategies exist behind it: a **one-shot**
+  provider spawns a fresh subprocess per request and delivers the prompt on stdin
+  (Ollama-style, and any cheap-to-start backend); a **session** provider keeps one
+  long-lived interactive harness and reuses it across all PRs, amortizing the
+  harness's heavy startup cost (Kiro, Claude, Grok). Which strategy a provider
+  uses is fixed by its name in one closed, code-owned mapping — never an
+  independently configured value, so a name can never be paired with the wrong
+  strategy. There is no raw-command override for either strategy: the argv shape
+  per name is fixed in code, parameterized only by the selected model, so adding
+  a provider means adding a mapping entry and an argv builder, not exposing a new
+  escape hatch. A **fallback** provider slot, when configured, is built through
+  the identical path as the primary and invoked only once the primary's own retry
+  budget is exhausted, bounded by its own independently configured timeout (TDD
+  6.11–6.17).
 - **The classification session enables exactly two deliberately-introduced,
   tightly-scoped tools — and no others.** A session provider hands the harness one
   PR at a time via a file (the event trail is too large to type into the session:

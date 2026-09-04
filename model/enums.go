@@ -77,6 +77,20 @@ const (
 	GitHubStateMerged GitHubState = "merged"
 )
 
+// ProviderSource records which provider slot produced an item's current
+// judgment (SCHEMA: provider; TDD 6.16). Shared between PR and Issue — unlike
+// Bucket/Action, provenance is not entity-specific, so one type serves both
+// rather than being duplicated into issueenums.go. Deliberately always set,
+// never omitted: the operator chose explicit disclosure over an omitempty
+// convention (unlike CIFailing/Unverified), so a reader of the raw YAML never
+// needs to know an absence convention to tell primary from fallback.
+type ProviderSource string
+
+const (
+	ProviderSourcePrimary  ProviderSource = "primary"
+	ProviderSourceFallback ProviderSource = "fallback"
+)
+
 // validBuckets and its siblings are the single source of enum membership,
 // used by both parsing and validation so the closed set is defined once.
 var (
@@ -97,6 +111,9 @@ var (
 	}
 	validRoles = map[Role]struct{}{
 		RoleSubmitter: {}, RoleReviewer: {},
+	}
+	validProviderSources = map[ProviderSource]struct{}{
+		ProviderSourcePrimary: {}, ProviderSourceFallback: {},
 	}
 )
 
@@ -160,3 +177,15 @@ func ParseRole(s string) (Role, error) {
 
 // Valid reports whether the Role is a member of the closed vocabulary.
 func (r Role) Valid() bool { _, ok := validRoles[r]; return ok }
+
+// ParseProviderSource validates s and returns the typed ProviderSource.
+func ParseProviderSource(s string) (ProviderSource, error) {
+	p := ProviderSource(s)
+	if _, ok := validProviderSources[p]; !ok {
+		return "", fmt.Errorf("invalid provider source %q", s)
+	}
+	return p, nil
+}
+
+// Valid reports whether the ProviderSource is a member of the closed vocabulary.
+func (p ProviderSource) Valid() bool { _, ok := validProviderSources[p]; return ok }

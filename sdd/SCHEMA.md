@@ -87,6 +87,26 @@ path only forces it when the live request is present. See TDD 4.8.
 | `submitter` | The operator authored the PR. |
 | `reviewer` | The operator was requested to review it. |
 
+### `provider`
+
+Records which provider slot produced an item's current judgment (TDD 6.11–6.16).
+Shared, unlike `bucket`/`action`, between the `!pr` and `!issue` documents —
+provenance is not entity-specific.
+
+| Value | Meaning |
+|-------|---------|
+| `primary` | The primary provider produced the judgment, or no judgment was attempted this run (an immutable floor with floor notes skipped, or an exhausted retry budget with no fallback rescue) — the deterministic default whenever there is no real provenance to report. |
+| `fallback` | The primary provider's retry budget was exhausted and the configured fallback provider then produced a valid judgment. |
+
+Unlike every other flag/enum on these documents (`ci_failing`, `unverified`,
+`input_fingerprint`), this field is **always written explicitly** — never
+`omitempty`. The operator deliberately chose full disclosure over the
+absence-means-primary convention used elsewhere, so a reader of the raw YAML
+never needs to know an omission convention to tell a primary-judged row from a
+fallback-judged one. The one exception is a record written before this field
+existed: an empty string is tolerated by validation (not rejected), but the
+classifier stamps a real value on every fresh judgment going forward.
+
 ---
 
 ## Issue vocabularies
@@ -173,6 +193,7 @@ recognize is round-tripped verbatim rather than dropped (TDD 2.5).
 | `operator_stale` | `bool` | no | Operator's manual Stale override; preserved across runs (TDD 2.2). |
 | `last_activity` | `date-time` | no | Timestamp of the PR's most recent trail event. Persisted (unlike the trail it derives from) because a terminal PR is carried forward without a re-crawl, so the stored value is the only activity date such a row has; rendered as the Updated column on live tables. Absent on a record written before the field existed, in which case it is backfilled from `merged_at`/`closed_at` for a terminal PR and rendered as a dash otherwise. |
 | `input_fingerprint` | `string` | no | Opaque hash of every deterministic input to an open PR's judgment (the most recent trail event, `ci_failing`, unresolved-thread count, mergeability, and pending-review-request state). Not itself meaningful — used only for equality comparison on the next run to detect that nothing worth re-judging happened, so the provider call is skipped and the row's `bucket`/`action`/`priority`/`companion`/`emoji` are carried forward verbatim (TDD 4.13). Never set when `unverified`, so a degraded judgment is never mistaken for a cache. Absent on a record written before the field existed or on a merged/closed/stale PR, for which the provider call is either skipped for other reasons or not this comparison's concern. |
+| `provider` | `provider` | yes | Which provider slot produced this PR's current judgment (TDD 6.16). Always written explicitly (see § `provider` above) — the one exception is a record written before this field existed, which validates with an empty value. |
 | `merged_at` | `date` | no | Present iff `bucket: merged`. |
 | `closed_at` | `date` | no | Present iff `bucket: closed`. |
 
@@ -194,6 +215,7 @@ action: changes_requested
 priority: elevated
 companion: mitigating QA findings
 emoji: 🔧
+provider: primary
 ```
 
 ### `!issue` document
@@ -219,6 +241,7 @@ them, and vice versa (TDD 2.5).
 | `unverified` | `bool` | no | `true` when model judgment was attempted and could not be obtained. A note-less zero-comment issue is **not** unverified — nothing was attempted (TDD 8.3). |
 | `operator_stale` | `bool` | no | Operator's manual Stale override; preserved across runs (TDD 8.7). |
 | `last_activity` | `date-time` | no | Timestamp of the issue's most recent trail event; persisted and rendered as the Updated column, for the same reason as on a `!pr` document. Backfilled from `closed_at` for a closed issue when absent. |
+| `provider` | `provider` | yes | Which provider slot produced this issue's current judgment (TDD 6.16). Mirrors the `!pr` document's field; see § `provider` above. |
 | `closed_at` | `date` | no | Present iff `bucket: closed`. |
 
 **Example:**
@@ -236,6 +259,7 @@ action: awaiting_response
 priority: neutral
 companion: maintainer asked for repro steps
 emoji: ❓
+provider: primary
 ```
 
 An issue with no conversation carries no note at all:
@@ -251,6 +275,7 @@ created: 2026-08-02
 bucket: open
 action: triage
 priority: neutral
+provider: primary
 ```
 
 ---
@@ -260,6 +285,32 @@ priority: neutral
 Classification hands the provider one item's event trail and expects one
 structured response. Transport is the provider subprocess's stdin/stdout, or the
 verdict tool for a session provider (TECH.md § Provider).
+
+### Provider construction
+
+A provider is built from a name and a model (`provider.Options{Name, Model,
+...}`) — there is no independently-configured invocation kind and no raw
+command line (TDD 6.11): `provider.KindForName` is the single closed mapping
+from name to kind, currently `kiro` → session, `ollama` → oneshot, and it is
+the only place in the codebase that pairs a name with a kind. Passing an
+unrecognized name is a construction error; there is no way to request a name
+with the "wrong" kind, since kind is never a parameter.
+
+**Primary and fallback are the same kind of slot** (TDD 6.12): both are built
+through the identical `provider.Options` shape. The fallback, when configured
+(`GSB_FALLBACK_PROVIDER` non-empty), is invoked only after the primary's own
+retry budget (`llm_retry_cap`, TDD 6.4) is fully exhausted, from a fresh
+attempt count — never interleaved with the primary's own attempts (TDD 6.13).
+If the fallback's own retry budget is also exhausted, the result is
+`unverified` exactly as if no fallback were configured (TDD 6.14). The same
+trigger rule applies to both the classification hand-off below and the
+notification hook's `Summarize` contract (SCHEMA § Summarize contract).
+
+| Config | Selects |
+|--------|---------|
+| `GSB_PROVIDER` / `GSB_PROVIDER_MODEL` | The primary provider's name and model. |
+| `GSB_FALLBACK_PROVIDER` / `GSB_FALLBACK_PROVIDER_MODEL` | The fallback provider's name and model. Empty `GSB_FALLBACK_PROVIDER` (the default) disables the fallback entirely — behavior is then unchanged from before this feature existed. |
+| `GSB_FALLBACK_PROVIDER_TIMEOUT` | Bounds a single fallback call, independently of the primary's own timeout (TDD 6.17). Defaults to three times the primary's timeout — discovered necessary by live verification: a one-shot local-model fallback can legitimately take longer per call than a session-based primary, so sharing one bound would either make the fallback unusably tight or make an ordinary primary hang take proportionally longer to detect. |
 
 The hand-off is **generic over entity**. One request shape, one parser, and one
 retry loop serve both pull requests and issues; what differs is the vocabulary,
@@ -464,9 +515,12 @@ removed without cost to ordinary usability: a consumer that blindly forwards
 these fields to a shell, `eval`, or another interpreter cannot be tricked into
 command *substitution or chaining*, because those characters are never present
 in the string to begin with. `GSB_NOTIFY_HOOK` itself is trusted operator
-configuration (invoked as a fixed command line, the same trust level as
-`GSB_PROVIDER_CMD`) — sanitization exists for the untrusted content flowing
-*through* that trusted command, not for the command itself. Sanitization also
+configuration, invoked as a fixed command line — sanitization exists for the
+untrusted content flowing *through* that trusted command, not for the command
+itself. (The provider invocation carries no equivalent operator-supplied
+command line at all: POLICY blackboxes provider construction to a name and a
+model, with no raw-command override for either the primary or fallback slot.)
+Sanitization also
 runs preventatively, before a companion note becomes part of the prompt sent
 to the provider for the summary call — narrowing the same GitHub-sourced
 content's prompt-injection surface on the way in, on top of (not instead of)

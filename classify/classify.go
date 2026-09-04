@@ -26,7 +26,11 @@ import (
 // unchanged open item and skip the provider call for it (TDD 4.13, 8.8); they
 // are never written to by the classifier.
 type Classifier struct {
-	prov        provider.Provider
+	prov provider.Provider
+	// fallback is invoked when prov's own retry budget is exhausted (TDD 6.13).
+	// Nil means no fallback is configured — exhausting prov's retries marks the
+	// row unverified, unchanged from before this feature (TDD 6.12).
+	fallback    provider.Provider
 	cfg         config.Config
 	log         *slog.Logger
 	now         func() time.Time
@@ -34,17 +38,18 @@ type Classifier struct {
 	priorIssues map[string]model.Issue
 }
 
-// New builds a Classifier. now is injectable for deterministic tests; pass
+// New builds a Classifier. fallback may be nil (no fallback configured,
+// TDD 6.13). now is injectable for deterministic tests; pass
 // time.Now in production. prior is the store's existing PR records keyed by PR
 // key (TDD 4.13), and priorIssues the existing issue records keyed by issue key
 // (TDD 8.8); pass nil or an empty map for either when there is no prior store
 // (e.g. first run) — every item is then treated as first-seen and reaches the
 // provider.
-func New(prov provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR, priorIssues map[string]model.Issue) *Classifier {
+func New(prov, fallback provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR, priorIssues map[string]model.Issue) *Classifier {
 	if now == nil {
 		now = time.Now
 	}
-	return &Classifier{prov: prov, cfg: cfg, log: log, now: now, prior: prior, priorIssues: priorIssues}
+	return &Classifier{prov: prov, fallback: fallback, cfg: cfg, log: log, now: now, prior: prior, priorIssues: priorIssues}
 }
 
 // ClassifyAll classifies every PR, bounding provider fan-out by the configured
@@ -94,15 +99,20 @@ func (c *Classifier) classifyMerged(ctx context.Context, pr model.PR) model.PR {
 	pr.CIFailing = false
 	if c.cfg.SkipFloorNotes {
 		// Merged is a hard fact; skip the model. Companion is left empty (TDD
-		// 4.5 unavailable marker) and priority defaults neutral.
+		// 4.5 unavailable marker) and priority defaults neutral. No judgment was
+		// attempted, so Provider takes the same deterministic default as
+		// Priority/CloseReason elsewhere on this floor-skip path.
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
+		pr.Provider = model.ProviderSourcePrimary
 		return pr
 	}
 	if len(pr.Events) == 0 && pr.Companion != "" {
 		// Carried terminal record: no event trail to judge from, and a cached
 		// verdict is already present (TDD 1.5). Keep its companion/emoji/priority
-		// rather than re-judging an empty trail into an unavailable note.
+		// rather than re-judging an empty trail into an unavailable note. Provider
+		// is left as whatever the carried record already has (TDD 6.16 carry-forward
+		// via pr already being a copy of the stored record at this call site).
 		return pr
 	}
 	c.applyCompanionAndPriority(ctx, &pr, model.GitHubStateMerged)
@@ -122,18 +132,22 @@ func (c *Classifier) classifyClosed(ctx context.Context, pr model.PR) model.PR {
 		// Closed-unmerged is a hard fact; skip the model. The close sub-reason
 		// is not inferred (TDD 4.3) in this mode — default it deterministically
 		// — and the companion is left empty (TDD 4.5 unavailable marker). This
-		// is not the unverified fallback: the bucket is authoritative.
+		// is not the unverified fallback: the bucket is authoritative. No
+		// judgment was attempted, so Provider takes the same deterministic
+		// default as the other floor-skip fields.
 		pr.CloseReason = model.CloseReasonCancelled
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
+		pr.Provider = model.ProviderSourcePrimary
 		return pr
 	}
 
 	if len(pr.Events) == 0 && pr.Companion != "" {
 		// Carried terminal record: no event trail to judge from, and a cached
-		// verdict — including its close sub-reason — is already present (TDD
-		// 1.5). Keep it as-is rather than re-judging an empty trail. Guard the
-		// sub-reason so a carried record missing it still satisfies the schema.
+		// verdict — including its close sub-reason and Provider — is already
+		// present (TDD 1.5). Keep it as-is rather than re-judging an empty
+		// trail. Guard the sub-reason so a carried record missing it still
+		// satisfies the schema.
 		if !pr.CloseReason.Valid() {
 			pr.CloseReason = model.CloseReasonCancelled
 		}
@@ -146,6 +160,9 @@ func (c *Classifier) classifyClosed(ctx context.Context, pr model.PR) model.PR {
 		pr.CloseReason = model.CloseReasonCancelled // conservative default flag, not authoritative
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
+		// Neither provider produced a usable verdict; same deterministic
+		// default as the open path's unverified branch.
+		pr.Provider = model.ProviderSourcePrimary
 		c.log.Warn("close classification unverified", "pr", pr.Key(), "attempts", res.Attempts, "reason", res.Err)
 		return pr
 	}
@@ -162,6 +179,7 @@ func (c *Classifier) classifyClosed(ctx context.Context, pr model.PR) model.PR {
 	pr.Priority = res.Response.Priority
 	pr.Companion = res.Response.Companion
 	pr.Emoji = res.Response.Emoji
+	pr.Provider = providerSourceFor(res)
 	return pr
 }
 
@@ -203,6 +221,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		pr.Emoji = old.Emoji
 		pr.Unverified = false
 		pr.InputFingerprint = fp
+		// Carried forward unchanged: nothing was re-judged this run, so the
+		// provenance of the carried verdict is also carried forward rather than
+		// re-stamped (TDD 6.16) — obvious once stated: this row's Provider
+		// value has not changed just because the run happened to execute.
+		pr.Provider = old.Provider
 		// Carried forward unchanged: this run never reached the provider for
 		// this PR, so it is not part of the notification hook's change set
 		// (TDD 9.1). WasJudged already defaults false; left unset here for
@@ -235,6 +258,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		}
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
+		// Neither provider produced a usable verdict, so there is no real
+		// provenance to record; default deterministically to primary, the same
+		// pattern as CloseReason/Priority's conservative defaults above — not
+		// claiming a fallback rescue that did not happen.
+		pr.Provider = model.ProviderSourcePrimary
 		c.log.Warn("open classification unverified", "pr", pr.Key(), "attempts", res.Attempts, "reason", res.Err)
 		// Deliberately not stamping InputFingerprint here: an unverified result
 		// must never be treated as a cached judgment on a later run (TDD 4.13,
@@ -252,6 +280,7 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	pr.Priority = res.Response.Priority
 	pr.Companion = res.Response.Companion
 	pr.Emoji = res.Response.Emoji
+	pr.Provider = providerSourceFor(res)
 
 	// The response carries bucket and action as plain strings, because the legal
 	// vocabulary is entity-specific (SCHEMA § Response). Parse them into the PR
@@ -429,11 +458,26 @@ func (c *Classifier) applyCompanionAndPriority(ctx context.Context, pr *model.PR
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
 		pr.Emoji = ""
+		// Neither provider produced a usable verdict; same deterministic
+		// default used everywhere else on an unverified/skipped path.
+		pr.Provider = model.ProviderSourcePrimary
 		return
 	}
 	pr.Priority = res.Response.Priority
 	pr.Companion = res.Response.Companion
 	pr.Emoji = res.Response.Emoji
+	pr.Provider = providerSourceFor(res)
+}
+
+// providerSourceFor translates a Result's FromFallback flag into the typed
+// ProviderSource persisted on a PR or issue (TDD 6.16). Shared by every
+// successful-judgment call site in this package so the translation happens in
+// exactly one place.
+func providerSourceFor(res provider.Result) model.ProviderSource {
+	if res.FromFallback {
+		return model.ProviderSourceFallback
+	}
+	return model.ProviderSourcePrimary
 }
 
 // judge builds the provider request and runs the bounded, self-correcting retry
@@ -448,5 +492,5 @@ func (c *Classifier) judge(ctx context.Context, pr model.PR, state model.GitHubS
 		Events:      pr.Events,
 		Constraints: provider.ConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),
 	}
-	return provider.Judge(ctx, c.prov, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout)
+	return provider.Judge(ctx, c.prov, c.fallback, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout, c.cfg.FallbackProviderTimeout, c.log)
 }

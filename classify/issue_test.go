@@ -40,7 +40,7 @@ func issueClassifier(p provider.Provider) *Classifier {
 	// would just repeat an identical rejection.
 	cfg.LLMRetryCap = 0
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(p, cfg, log, func() time.Time { return issueRefNow }, nil, nil)
+	return New(p, nil, cfg, log, func() time.Time { return issueRefNow }, nil, nil)
 }
 
 // openIssue builds an open issue with the given comment count and last activity.
@@ -70,7 +70,7 @@ func issueClassifierWithPrior(out string, priorIssues map[string]model.Issue) (*
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: out}
-	return New(cp, cfg, log, func() time.Time { return issueRefNow }, nil, priorIssues), cp
+	return New(cp, nil, cfg, log, func() time.Time { return issueRefNow }, nil, priorIssues), cp
 }
 
 // priorUnchangedIssue and freshUnchangedIssue build a matching first-run/

@@ -23,18 +23,44 @@ const (
 	KindSession Kind = "session"
 )
 
+// kindByName is the single closed mapping from a provider name to its
+// invocation kind (TDD 6.11). It is the only place in the codebase that
+// associates a name with a kind, so pairing a name with any other kind is
+// unrepresentable rather than merely rejected by validation — there is no
+// configuration value that could name a kind independently, for either the
+// primary or fallback slot (TDD 6.12).
+var kindByName = map[string]Kind{
+	"kiro":   KindSession,
+	"ollama": KindOneShot,
+}
+
+// KindForName returns the fixed invocation kind for a provider name, or an
+// error if the name is not a member of the closed set this build supports.
+func KindForName(name string) (Kind, error) {
+	k, ok := kindByName[name]
+	if !ok {
+		return "", fmt.Errorf("unknown provider %q", name)
+	}
+	return k, nil
+}
+
 // Options fully describes how to construct a provider. The core populates it
 // from configuration and hands it to NewFromOptions, the single seam through
-// which a provider is obtained.
+// which a provider is obtained. There is deliberately no Kind or Command
+// field: the invocation kind is derived solely from Name (KindForName,
+// TDD 6.11), and the harness/subprocess argv is a fixed, blackboxed shape per
+// kind, parameterized only by Model — never an operator-supplied command line
+// (POLICY: no raw-command escape hatch for either provider slot).
 type Options struct {
-	// Name identifies the provider/harness (e.g. "kiro").
+	// Name identifies the provider (e.g. "kiro", "ollama"). Its invocation kind
+	// is derived from this name alone (KindForName) — never independently
+	// configured, so a name can never be paired with the wrong kind (TDD 6.11).
 	Name string
-	// Kind selects the invocation strategy.
-	Kind Kind
-	// Command, when set, overrides the harness argv (both kinds). For a session
-	// provider it is the interactive launch argv; for one-shot it is the argv
-	// whose stdin receives the prompt.
-	Command []string
+	// Model selects the model within Name's fixed kind (e.g. "glm-5" for kiro,
+	// "glm-4.7-flash" for ollama). Both the primary and fallback slot use this
+	// same field — the two slots are symmetric, differing only in when each is
+	// invoked (TDD 6.12).
+	Model string
 
 	// Session-only settings.
 	TmuxBin      string        // tmux executable (default "tmux")
@@ -52,13 +78,19 @@ type Options struct {
 	PoolSize int
 }
 
-// NewFromOptions builds a provider from Options. One-shot delegates to the
-// existing subprocess provider; session builds the tmux + MCP-sink provider,
-// provisioning a harness profile that enables the verdict tool (TDD 6.7, 6.8).
+// NewFromOptions builds a provider from Options. The invocation kind is
+// derived from o.Name (KindForName, TDD 6.11) — one-shot delegates to the
+// blackboxed subprocess provider parameterized by Model; session builds the
+// tmux + MCP-sink provider, provisioning a harness profile that enables the
+// verdict tool (TDD 6.7, 6.8).
 func NewFromOptions(o Options) (Provider, error) {
-	switch o.Kind {
-	case KindOneShot, "":
-		return New(o.Name, o.Command)
+	kind, err := KindForName(o.Name)
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case KindOneShot:
+		return newOneShotProvider(o.Name, o.Model)
 	case KindSession:
 		if o.PoolSize > 1 {
 			// Each pool member is an independent harness session; build with the
@@ -71,7 +103,7 @@ func NewFromOptions(o Options) (Provider, error) {
 		}
 		return newHarnessSession(o)
 	default:
-		return nil, fmt.Errorf("unknown provider kind %q", o.Kind)
+		return nil, fmt.Errorf("unknown provider kind %q", kind)
 	}
 }
 
@@ -88,7 +120,8 @@ const (
 // newHarnessSession assembles a session provider: it starts the MCP sink, then
 // provisions a harness profile that points at the sink and instructs the model
 // to return its verdict through the verdict tool, then launches the harness
-// interactively under tmux.
+// interactively under tmux. The harness argv is always the fixed, blackboxed
+// Kiro shape (POLICY: no raw-command escape hatch) — only o.Model varies it.
 func newHarnessSession(o Options) (Provider, error) {
 	toolName := o.VerdictTool
 	if toolName == "" {
@@ -103,37 +136,36 @@ func newHarnessSession(o Options) (Provider, error) {
 		return nil, err
 	}
 
-	argv := o.Command
+	model := o.Model
+	if model == "" {
+		model = defaultKiroModel
+	}
 	clearCmd := o.ClearCommand
 	idleMarker := o.IdleMarker
 	busyMarker := o.BusyMarker
-	workDir := ""
-	var cleanup func()
-	if len(argv) == 0 {
-		// MVP harness: Kiro CLI, launched interactively (not --no-interactive)
-		// under a provisioned named profile that enables only the verdict and
-		// summary tools. kiro-cli resolves --agent by NAME from a .kiro/agents
-		// directory in the working dir (or globally), not by file path, so the
-		// profile is written as <name>.json into a temp workspace the session
-		// runs in.
-		agentName := "githubslashboard-session"
-		dir, perr := provisionKiroProfile(sink.Endpoint(), toolName, summaryToolName, agentName)
-		if perr != nil {
-			_ = sink.Close()
-			return nil, perr
-		}
-		workDir = dir
-		cleanup = func() { _ = os.RemoveAll(dir) }
-		argv = kiroSessionArgv(agentName)
-		if clearCmd == "" {
-			clearCmd = kiroClearCommand
-		}
-		if idleMarker == "" {
-			idleMarker = kiroIdleMarker
-		}
-		if busyMarker == "" {
-			busyMarker = kiroBusyMarker
-		}
+
+	// The harness is always the Kiro CLI, launched interactively (not
+	// --no-interactive) under a provisioned named profile that enables only the
+	// verdict and summary tools. kiro-cli resolves --agent by NAME from a
+	// .kiro/agents directory in the working dir (or globally), not by file
+	// path, so the profile is written as <name>.json into a temp workspace the
+	// session runs in.
+	agentName := "githubslashboard-session"
+	workDir, perr := provisionKiroProfile(sink.Endpoint(), toolName, summaryToolName, agentName, model)
+	if perr != nil {
+		_ = sink.Close()
+		return nil, perr
+	}
+	cleanup := func() { _ = os.RemoveAll(workDir) }
+	argv := kiroSessionArgv(agentName)
+	if clearCmd == "" {
+		clearCmd = kiroClearCommand
+	}
+	if idleMarker == "" {
+		idleMarker = kiroIdleMarker
+	}
+	if busyMarker == "" {
+		busyMarker = kiroBusyMarker
 	}
 
 	tmuxBin := o.TmuxBin
@@ -179,6 +211,11 @@ const (
 	kiroClearCommand = "/clear"
 	kiroIdleMarker   = "ask a question or describe a task"
 	kiroBusyMarker   = "Kiro is working"
+
+	// defaultKiroModel is used when Options.Model is empty, preserving today's
+	// behavior for a deployment that does not set GSB_PROVIDER_MODEL /
+	// GSB_FALLBACK_PROVIDER_MODEL.
+	defaultKiroModel = "glm-5"
 )
 
 // kiroSessionArgv is the MVP Kiro CLI interactive launch for a reused session.
@@ -203,8 +240,10 @@ func kiroSessionArgv(agentName string) []string {
 // actually offered a choice even though the profile trusts both names. It is
 // written as <workspace>/.kiro/agents/<agentName>.json and the workspace dir is
 // returned so the session can run with it as the working directory (kiro-cli
-// resolves --agent by name from that location).
-func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName string) (string, error) {
+// resolves --agent by name from that location). model selects the model the
+// profile pins (TDD 6.12: symmetric with the one-shot provider's own Model
+// parameterization).
+func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName, model string) (string, error) {
 	workspace, err := os.MkdirTemp("", "gsb-kiro-session-")
 	if err != nil {
 		return "", fmt.Errorf("temp workspace: %w", err)
@@ -219,7 +258,7 @@ func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName string) (
 		"$schema":     "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
 		"name":        agentName,
 		"description": "Bare a-priori PR/issue classifier and notification summarizer that reads its input from a file and returns its result through whichever result MCP tool the current turn offers.",
-		"model":       "glm-5",
+		"model":       model,
 		// Do not merge the global legacy mcp.json: this session must have a bare
 		// context with only the result tools, no unrelated MCP servers, so the
 		// harness starts fast and stays focused. This is the in-profile control

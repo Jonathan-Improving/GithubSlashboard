@@ -38,3 +38,6 @@ config.local.*
 
 # --- SDD workflow artifact (commit message draft; never committed) ---
 git.commit.txt
+
+# --- Session hand-off scratch doc (internal, not project documentation) ---
+HANDOFF.md

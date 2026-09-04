@@ -22,7 +22,6 @@ import (
 func TestLiveKiroSessionVerdict(t *testing.T) {
 	prov, err := NewFromOptions(Options{
 		Name:         "kiro",
-		Kind:         KindSession,
 		ReadyTimeout: 90 * time.Second,
 		Settle:       800 * time.Millisecond,
 	})
@@ -75,7 +74,7 @@ func TestLiveKiroSessionVerdict(t *testing.T) {
 // live run were all open reviewer PRs hitting the retry cap).
 func TestLiveKiroSparseReviewerPR(t *testing.T) {
 	prov, err := NewFromOptions(Options{
-		Name: "kiro", Kind: KindSession,
+		Name:         "kiro",
 		ReadyTimeout: 90 * time.Second, Settle: 800 * time.Millisecond,
 	})
 	if err != nil {
@@ -114,7 +113,7 @@ func TestLiveKiroSparseReviewerPR(t *testing.T) {
 
 func TestLiveKiroLargeTrail(t *testing.T) {
 	prov, err := NewFromOptions(Options{
-		Name: "kiro", Kind: KindSession,
+		Name:         "kiro",
 		ReadyTimeout: 90 * time.Second, Settle: 800 * time.Millisecond,
 	})
 	if err != nil {
@@ -158,7 +157,6 @@ func TestLiveKiroLargeTrail(t *testing.T) {
 func TestLiveKiroSessionReuse(t *testing.T) {
 	prov, err := NewFromOptions(Options{
 		Name:         "kiro",
-		Kind:         KindSession,
 		ReadyTimeout: 90 * time.Second,
 		Settle:       800 * time.Millisecond,
 	})

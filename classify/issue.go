@@ -75,17 +75,20 @@ func (c *Classifier) classifyIssueClosed(ctx context.Context, iss model.Issue) m
 	if c.cfg.SkipFloorNotes || !c.issueWorthJudging(iss) {
 		// Either the operator opted out of floor notes, or there is nothing to
 		// judge. Neither is a failure, so the row is not marked unverified — its
-		// bucket and reason are hard facts (TDD 8.3).
+		// bucket and reason are hard facts (TDD 8.3). No judgment was
+		// attempted, so Provider takes the same deterministic default used on
+		// every other skipped/unverified path.
 		iss.Priority = model.PriorityNeutral
 		iss.Companion = ""
 		iss.Emoji = ""
+		iss.Provider = model.ProviderSourcePrimary
 		return iss
 	}
 
 	if len(iss.Events) == 0 && iss.Companion != "" {
 		// Carried terminal record: the trail was not re-crawled because the
-		// issue is settled, and a cached verdict is already present. Keep it
-		// rather than re-judging an empty trail.
+		// issue is settled, and a cached verdict — including its Provider — is
+		// already present. Keep it rather than re-judging an empty trail.
 		return iss
 	}
 
@@ -119,6 +122,7 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		iss.Priority = model.PriorityNeutral
 		iss.Companion = ""
 		iss.Emoji = ""
+		iss.Provider = model.ProviderSourcePrimary
 		// A quiet, never-engaged issue still ages into stale on the issue
 		// threshold (TDD 8.5).
 		if c.issueStaleByAge(iss) {
@@ -141,6 +145,10 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		iss.Emoji = old.Emoji
 		iss.Unverified = false
 		iss.InputFingerprint = fp
+		// Carried forward unchanged: provenance travels with the rest of the
+		// carried verdict rather than being re-stamped (TDD 6.16, mirroring the
+		// PR path).
+		iss.Provider = old.Provider
 		// Carried forward unchanged: not part of the notification hook's
 		// change set this run (TDD 9.1).
 		iss.WasJudged = false
@@ -155,6 +163,9 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		iss.Priority = model.PriorityNeutral
 		iss.Companion = ""
 		iss.Emoji = ""
+		// Neither provider produced a usable verdict; same deterministic
+		// default used everywhere else on an unverified path.
+		iss.Provider = model.ProviderSourcePrimary
 		c.log.Warn("issue classification unverified", "issue", iss.Key(), "attempts", res.Attempts, "reason", res.Err)
 		// Deliberately not stamping InputFingerprint here: an unverified result
 		// must never be treated as a cached judgment on a later run (TDD 8.8, 8.9).
@@ -167,6 +178,7 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 	iss.Priority = res.Response.Priority
 	iss.Companion = res.Response.Companion
 	iss.Emoji = res.Response.Emoji
+	iss.Provider = providerSourceFor(res)
 
 	// The response carries bucket and action as plain strings, because the legal
 	// vocabulary is entity-specific (SCHEMA § Response). This call site is the
@@ -255,6 +267,9 @@ func (c *Classifier) applyIssueNote(ctx context.Context, iss *model.Issue) {
 		iss.Priority = model.PriorityNeutral
 		iss.Companion = ""
 		iss.Emoji = ""
+		// Neither provider produced a usable verdict; same deterministic
+		// default used everywhere else on an unverified/skipped path.
+		iss.Provider = model.ProviderSourcePrimary
 		// Log it: the row is still authoritative (its bucket is a hard fact), so
 		// it is not marked unverified — which means a systematic failure here
 		// would otherwise be invisible, showing up only as every settled row
@@ -265,6 +280,7 @@ func (c *Classifier) applyIssueNote(ctx context.Context, iss *model.Issue) {
 	iss.Priority = res.Response.Priority
 	iss.Companion = res.Response.Companion
 	iss.Emoji = res.Response.Emoji
+	iss.Provider = providerSourceFor(res)
 }
 
 // judgeIssue builds the provider request for an issue and runs the same bounded,
@@ -285,5 +301,5 @@ func (c *Classifier) judgeIssue(ctx context.Context, iss model.Issue) provider.R
 		Events:      iss.Events,
 		Constraints: provider.IssueConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),
 	}
-	return provider.Judge(ctx, c.prov, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout)
+	return provider.Judge(ctx, c.prov, c.fallback, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout, c.cfg.FallbackProviderTimeout, c.log)
 }

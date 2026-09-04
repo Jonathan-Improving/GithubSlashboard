@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Jonathan-Improving/githubslashboard/model"
@@ -17,17 +18,72 @@ type Result struct {
 	Unverified bool
 	// Err is the last error encountered when Unverified is true (for logging).
 	Err error
-	// Attempts is the number of provider invocations made (1 + retries).
+	// Attempts is the number of provider invocations made against whichever
+	// provider ultimately produced (or failed to produce) this Result — the
+	// primary's own attempts if it succeeded or no fallback ran, otherwise the
+	// fallback's own attempts (TDD 6.13: never a combined count, since the two
+	// slots' attempts are never interleaved).
 	Attempts int
+	// FromFallback is true when Response came from the fallback provider
+	// rather than the primary (TDD 6.16). Always false when Unverified, since
+	// an unverified result was not produced by either provider.
+	FromFallback bool
 }
 
-// Judge runs the self-correcting retry loop for one request against p:
+// Judge runs the self-correcting retry loop for one request against primary:
 // an initial call plus up to retryCap re-invocations, each quoting the prior
 // bad output and the required structure (TDD 6.4). Each call is bounded by
 // timeout (TDD 6.5). If every attempt fails to parse/validate or the provider
-// errors, the result is marked unverified rather than presenting a raw flag as
-// truth.
-func Judge(ctx context.Context, p Provider, req Request, retryCap int, timeout time.Duration) Result {
+// errors, and fallback is non-nil, the identical retry loop then runs against
+// fallback from a fresh attempt count — never interleaved with primary's own
+// attempts (TDD 6.12, 6.13). If fallback is nil, or fallback's own attempts are
+// also exhausted, the result is marked unverified rather than presenting a raw
+// flag as truth (TDD 6.14). log, when non-nil, records the severity ladder
+// (TDD 6.16): WARN when primary is exhausted and a fallback will be tried,
+// ERROR when primary is exhausted with no fallback configured, INFO when the
+// fallback succeeds, ERROR when the fallback is also exhausted. timeout bounds
+// each primary call; fallbackTimeout bounds each fallback call independently
+// (TDD 6.17) — a one-shot fallback backed by a local model can legitimately
+// need longer per call than a session-based primary, discovered by live
+// verification against real prompts rather than assumed in advance.
+func Judge(ctx context.Context, primary, fallback Provider, req Request, retryCap int, timeout, fallbackTimeout time.Duration, log *slog.Logger) Result {
+	res := judgeOnce(ctx, primary, req, retryCap, timeout)
+	if !res.Unverified {
+		return res
+	}
+
+	if fallback == nil {
+		logJudge(log, slog.LevelError, "primary provider exhausted, no fallback configured", primary, req, res.Err)
+		return res
+	}
+	logJudge(log, slog.LevelWarn, "primary provider exhausted, trying fallback", primary, req, res.Err)
+
+	fbRes := judgeOnce(ctx, fallback, req, retryCap, fallbackTimeout)
+	if !fbRes.Unverified {
+		fbRes.FromFallback = true
+		logJudge(log, slog.LevelInfo, "fallback provider produced a verdict", fallback, req, nil)
+		return fbRes
+	}
+	logJudge(log, slog.LevelError, "fallback provider also exhausted", fallback, req, fbRes.Err)
+	return fbRes
+}
+
+// logJudge is a small helper so Judge's four log call sites stay uniform and
+// terse; a nil log is a no-op (Judge is usable without a logger, e.g. in tests).
+func logJudge(log *slog.Logger, level slog.Level, msg string, p Provider, req Request, err error) {
+	if log == nil {
+		return
+	}
+	args := []any{"provider", p.Name(), "entity", string(req.Entity), "repo", req.Repo, "number", req.Number}
+	if err != nil {
+		args = append(args, "err", err)
+	}
+	log.Log(context.Background(), level, msg, args...)
+}
+
+// judgeOnce runs the self-correcting retry loop against a single provider —
+// the shared mechanics behind both the primary and fallback attempts in Judge.
+func judgeOnce(ctx context.Context, p Provider, req Request, retryCap int, timeout time.Duration) Result {
 	var lastErr error
 	correction := ""
 	totalAttempts := retryCap + 1

@@ -129,6 +129,16 @@ type PR struct {
 	// when a new input starts mattering — only the hash's inputs change.
 	InputFingerprint string `yaml:"input_fingerprint,omitempty" json:"input_fingerprint,omitempty"`
 
+	// Provider records which provider slot produced this PR's current judgment
+	// (TDD 6.16). Unlike every other bool/string flag on this struct, it is
+	// deliberately never omitted (no omitempty): the operator chose explicit
+	// disclosure over the omitempty convention used elsewhere, so every record
+	// states plainly whether its judgment came from the primary or the
+	// fallback provider. Zero value is the empty string only on a record
+	// written before this field existed; the classifier always sets it to
+	// ProviderSourcePrimary or ProviderSourceFallback on every fresh judgment.
+	Provider ProviderSource `yaml:"provider" json:"provider"`
+
 	// Events is the chronological event trail (TDD 1.4). Not persisted.
 	Events []Event `yaml:"-" json:"-"`
 

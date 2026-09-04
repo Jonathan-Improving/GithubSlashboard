@@ -196,19 +196,41 @@ func TestSessionCloseClosesBoth(t *testing.T) {
 	}
 }
 
-func TestNewFromOptionsSelectsOneShot(t *testing.T) {
-	p, err := NewFromOptions(Options{Name: "kiro", Kind: KindOneShot})
+func TestNewFromOptionsSelectsOneShotByName(t *testing.T) {
+	// TDD 6.11: kind is derived from the name alone — "ollama" is fixed to
+	// oneshot, with no independent Kind field to set it otherwise.
+	p, err := NewFromOptions(Options{Name: "ollama", Model: "glm-4.7-flash"})
 	if err != nil {
-		t.Fatalf("NewFromOptions oneshot: %v", err)
+		t.Fatalf("NewFromOptions ollama: %v", err)
 	}
 	if _, ok := p.(*CommandProvider); !ok {
-		t.Errorf("oneshot should yield a CommandProvider, got %T", p)
+		t.Errorf("ollama should yield a CommandProvider, got %T", p)
 	}
 }
 
-func TestNewFromOptionsUnknownKind(t *testing.T) {
-	if _, err := NewFromOptions(Options{Name: "kiro", Kind: Kind("bogus")}); err == nil {
-		t.Error("unknown kind should error")
+func TestKindForNameIsTheOnlyMapping(t *testing.T) {
+	// TDD 6.11: the pairing is unrepresentable, not merely rejected — prove the
+	// closed mapping returns exactly the fixed kind for each known name and an
+	// error for anything else, with no way to override it via Options.
+	kind, err := KindForName("kiro")
+	if err != nil || kind != KindSession {
+		t.Errorf("KindForName(kiro) = %v, %v; want KindSession, nil", kind, err)
+	}
+	kind, err = KindForName("ollama")
+	if err != nil || kind != KindOneShot {
+		t.Errorf("KindForName(ollama) = %v, %v; want KindOneShot, nil", kind, err)
+	}
+	if _, err := KindForName("bogus"); err == nil {
+		t.Error("KindForName should reject an unknown provider name")
+	}
+}
+
+func TestNewFromOptionsUnknownProviderName(t *testing.T) {
+	// TDD 6.11: there is no Kind field to set independently anymore — an
+	// unrecognized provider name is the only way construction can fail on
+	// this axis, and it must fail rather than default to some kind.
+	if _, err := NewFromOptions(Options{Name: "bogus"}); err == nil {
+		t.Error("unknown provider name should error")
 	}
 }
 

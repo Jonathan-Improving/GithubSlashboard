@@ -120,3 +120,50 @@ func TestValidateEmojiAcceptsGlyphs(t *testing.T) {
 		}
 	}
 }
+
+// TestParseResponseSkipsThinkingTraceToFinalAnswer covers a real failure mode
+// found live against Ollama-served GLM-4.7-Flash (a "thinking" model): its
+// reasoning trace can draft/revise a scratch JSON answer, echo the prompt's
+// own "respond with a fenced ```json object" instruction back verbatim, and
+// write a malformed template example whose internal quoting is not
+// pairwise-balanced — any of which can desync a naive brace/quote scanner
+// for everything that follows. Ollama's CLI convention for such models emits
+// a literal "...done thinking." line before the real answer; extractJSON
+// only searches after it when present, sidestepping the reasoning trace's
+// unreliable quoting rather than trying to parse through it.
+func TestParseResponseSkipsThinkingTraceToFinalAnswer(t *testing.T) {
+	raw := "Thinking...\n" +
+		// A malformed template example inside the reasoning: an odd number of
+		// literal quotes, which would desync a whole-text quote-parity scanner.
+		"The events array looks like `{\"timestamp\": \"...\", \"text\": \"\n\"ci: passing\"}]`\n" +
+		// A draft/scratch answer the model later revises — must not be picked.
+		"Draft:\n```json\n{\"bucket\":\"open\",\"action\":\"changes_requested\",\"priority\":\"elevated\",\"companion\":\"draft note, not final\",\"emoji\":\"🔧\"}\n```\n" +
+		"Actually, let me reconsider...\n" +
+		"...done thinking.\n\n" +
+		"```json\n{\"bucket\":\"open\",\"action\":\"merge_ready\",\"priority\":\"neutral\",\"companion\":\"final answer after reconsidering\",\"emoji\":\"✅\"}\n```\n"
+
+	resp, err := ParseResponse(raw, ConstraintsFrom(3, 14))
+	if err != nil {
+		t.Fatalf("ParseResponse failed on a thinking-trace transcript: %v", err)
+	}
+	if resp.Action != string(model.ActionMergeReady) {
+		t.Errorf("action = %q, want the post-\"done thinking\" final answer (merge_ready), not the pre-cutoff draft (changes_requested)", resp.Action)
+	}
+	if resp.Companion != "final answer after reconsidering" {
+		t.Errorf("companion = %q, want the final answer's note, not the draft's", resp.Companion)
+	}
+}
+
+// TestParseResponseWithoutThinkingMarkerUnaffected confirms the fix is
+// additive: output with no "done thinking" marker at all (the one-shot Kiro
+// path, which never narrates) is scanned exactly as before.
+func TestParseResponseWithoutThinkingMarkerUnaffected(t *testing.T) {
+	raw := "Here is my answer:\n```json\n{\"bucket\":\"open\",\"action\":\"blocked_external\",\"priority\":\"neutral\",\"companion\":\"waiting on John review\",\"emoji\":\"⏳\"}\n```\nThanks!"
+	resp, err := ParseResponse(raw, ConstraintsFrom(3, 8))
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	if resp.Action != string(model.ActionBlockedExternal) {
+		t.Errorf("parsed wrong: %+v", resp)
+	}
+}

@@ -29,7 +29,7 @@ justified). The GitHub token is read from the environment, never stored.
 | Component | Role |
 |-----------|------|
 | A configured LLM provider | Performs event-trail judgment. Invoked as a subprocess (one-shot) or a reused interactive session, never linked. MVP: the Kiro CLI (`kiro-cli` / `q`). |
-| `tmux` | Terminal multiplexer that hosts a session provider's long-lived harness. Required only when `provider_kind` is `session`; the one-shot strategy does not use it. |
+| `tmux` | Terminal multiplexer that hosts a session provider's long-lived harness. Required only when the configured provider name resolves to the session invocation kind (currently `kiro`); a one-shot name (currently `ollama`) does not use it. |
 | A scheduler | Runs the binary unattended. macOS launchd for the MVP; Linux cron is a supported target with no core changes. |
 
 The provider and scheduler are both external and both isolated behind seams (see
@@ -67,12 +67,14 @@ priority, stale/close-reason judgment). The hand-off is generic over the entity
 being judged: the response's vocabulary is not fixed by the transport but supplied
 per request, so one provider path, parser, and retry loop serve both pull requests
 and issues while each entity's enum stays a tight closed set. Two invocation
-strategies sit behind the
-provider interface, selected by config. A **one-shot** provider delivers the
+strategies sit behind the provider interface. A **one-shot** provider delivers the
 prompt on a fresh subprocess's stdin and reads its stdout (Ollama-style, and any
 cheap-to-start backend). A **session** provider launches one heavy harness (Kiro,
 Claude, Grok) as a long-lived interactive process under tmux and reuses it for
-every PR, amortizing the harness's large startup cost. It hands the harness each
+every PR, amortizing the harness's large startup cost. Which strategy a provider
+uses is fixed by its name — a closed, code-owned mapping, not an independent
+configuration axis — so a name can never be paired with the wrong strategy. It
+hands the harness each
 PR *by file* — the event trail is too large to type into the session, where a
 terminal command-length limit would truncate it — writing the prompt to a
 temporary file and sending only a short instruction to read that path; the
@@ -84,7 +86,15 @@ so no terminal output is scraped. Either way the boundary is bounded by a timeou
 and a bounded retry loop (TDD 6.4, 6.5); a provider that fails or times out yields
 an `unverified` row rather than blocking the pipeline. The read tool is
 path-restricted and the verdict sink is inbound only — neither issues a GitHub
-call nor widens the read-only surface. For
+call nor widens the read-only surface.
+
+An optional **fallback** provider, built through the identical construction path
+as the primary, is invoked only after the primary's own retry budget is fully
+exhausted (TDD 6.11–6.17). It is bounded by its own independently configured
+timeout rather than the primary's, since a one-shot fallback backed by a local
+model can legitimately need longer per call than a session-based primary. Which
+provider slot produced an item's current judgment is recorded on the persisted
+record, never left implicit. For
 the request/response and verdict-tool field reference, see SCHEMA.md.
 
 **YAML store.** The persistence layer is the only reader and writer of the source
@@ -120,7 +130,7 @@ cannot be tricked into command injection by adversarial GitHub content
 | `github` | Owns all GitHub access; fetches the tracked PR and issue sets and assembles each item's event trail (REST, plus a read-only GraphQL query for PR review-thread resolution state), skipping the crawl for items the prior store already records as terminal (TDD 1.5, 8.1). Exposes read-only operations only. |
 | `model` | Owns the domain types: the PR and issue records, each entity's closed-set enums, and the shared event-trail types. |
 | `classify` | Applies the deterministic floors (PR merged/closed-unmerged, issue closed) and orchestrates provider judgment for open-item disposition, priority, and companion prose. Skips the provider entirely for an issue with no conversation to judge (TDD 8.3), and for an open PR whose deterministic inputs are unchanged since the prior stored record, which it is constructed with (TDD 4.13). |
-| `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink. A second, simpler contract (`Summarize`) produces the notification hook's summary sentence — a plain prompt in, a plain string out, no vocabulary to validate, no retry loop (TDD 6.9); the session provider's sink offers its verdict and summary tools mutually exclusively per turn, switching which one is advertised before each call rather than exposing both at once (TDD 6.10). Kiro CLI is the MVP harness. |
+| `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink; which strategy a given provider name uses is a closed, code-owned mapping, not a separately configured value. An optional fallback provider — built through the same construction path as the primary — is invoked only once the primary's own retry budget is exhausted, bounded by its own independent timeout. A second, simpler contract (`Summarize`) produces the notification hook's summary sentence — a plain prompt in, a plain string out, no vocabulary to validate, no retry loop (TDD 6.9); the session provider's sink offers its verdict and summary tools mutually exclusively per turn, switching which one is advertised before each call rather than exposing both at once (TDD 6.10). Kiro CLI is the MVP session harness; Ollama is the MVP one-shot backend. |
 | `store` | Owns the YAML source of truth: read, validate, merge (preserving operator-set state), and write `!pr` and `!issue` documents, preserving unrecognized tags verbatim. |
 | `render` | Pure function from the store to the Markdown status document; owns the layout that reproduces the established structure and the issues sections appended below it. |
 | `notify` | Owns the notification hook: collects the open PRs/issues that reached the provider for a fresh judgment this run, asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
@@ -146,8 +156,11 @@ serves one turn at a time — so it runs a **pool** of that many independent har
 sessions (each its own tmux session and verdict sink), and each concurrent
 classification checks out a free session, uses it, and returns it. A single session
 serializes its own turns (a mutex), while the pool provides the cross-session
-parallelism; this is what keeps a large classify within its scheduled window. There
-is no shared mutable state across the pipeline stages — each stage consumes the
+parallelism; this is what keeps a large classify within its scheduled window.
+A configured fallback provider is a wholly separate instance from the primary's
+pool — its own harness/subprocess, sized to one instance rather than the worker
+count, since it is invoked only on primary exhaustion rather than on every item.
+There is no shared mutable state across the pipeline stages — each stage consumes the
 prior stage's output and produces the next stage's input. The notification
 hook, when it fires, runs after render as one final sequential step — it is
 not part of the classify stage's fan-out and makes at most one additional

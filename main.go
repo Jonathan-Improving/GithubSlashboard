@@ -148,9 +148,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// Classify (deterministic floors + provider judgment).
 	prov, err := provider.NewFromOptions(provider.Options{
 		Name:         cfg.Provider,
-		Kind:         provider.Kind(cfg.ProviderKind),
-		Command:      cfg.ProviderCommand,
-		ClearCommand: "",
+		Model:        cfg.Model,
 		ReadyTimeout: cfg.ProviderReadyTimeout,
 		Settle:       cfg.ProviderIdleSettle,
 		PoolSize:     cfg.ClassifyWorkers,
@@ -167,7 +165,35 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			}
 		}()
 	}
-	classifier := classify.New(prov, cfg, log, time.Now, prior, priorIssues)
+
+	// The fallback provider, when configured, is built through the identical
+	// path as the primary (TDD 6.12) — same Options shape, just a different
+	// name/model. It gets a single instance (PoolSize 1) rather than the
+	// primary's classify-worker fan-out: fallback is invoked only after the
+	// primary's own retry budget is exhausted (TDD 6.13), a rare path, so
+	// paying for ClassifyWorkers idle fallback sessions would be wasted cost.
+	var fallback provider.Provider
+	if cfg.FallbackProvider != "" {
+		fallback, err = provider.NewFromOptions(provider.Options{
+			Name:         cfg.FallbackProvider,
+			Model:        cfg.FallbackModel,
+			ReadyTimeout: cfg.ProviderReadyTimeout,
+			Settle:       cfg.ProviderIdleSettle,
+			PoolSize:     1,
+		})
+		if err != nil {
+			return fmt.Errorf("fallback provider: %w", err)
+		}
+		if closer, ok := fallback.(interface{ Close() error }); ok {
+			defer func() {
+				if cerr := closer.Close(); cerr != nil {
+					log.Warn("fallback provider close", "err", cerr)
+				}
+			}()
+		}
+	}
+
+	classifier := classify.New(prov, fallback, cfg, log, time.Now, prior, priorIssues)
 	classifyStart := time.Now()
 	classified := classifier.ClassifyAll(ctx, fetched)
 	log.Info("classified PRs", "count", len(classified), "phase", "classify", "took", time.Since(classifyStart).String(), "workers", cfg.ClassifyWorkers)
@@ -200,7 +226,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// already written by this point, so a failing or slow hook can never delay
 	// or block the dashboard output itself (TDD 9.5). Entirely inert when no
 	// hook command is configured (TDD 9.4).
-	fireNotifyHook(ctx, cfg, prov, classified, classifiedIssues, log)
+	fireNotifyHook(ctx, cfg, prov, fallback, classified, classifiedIssues, log)
 
 	return nil
 }
@@ -209,9 +235,11 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 // fresh judgment this run (TDD 9.1, 9.2), and — only when that set is
 // non-empty and a hook command is configured — asks the provider for a short
 // summary and delivers the JSON payload to the hook's stdin (TDD 9.3, 9.4).
-// Any failure is logged and never propagated: a broken notification
-// integration must never be the thing that fails the run (TDD 9.5).
-func fireNotifyHook(ctx context.Context, cfg config.Config, prov provider.Provider, prs []model.PR, issues []model.Issue, log *slog.Logger) {
+// fallback (may be nil) is tried if the primary's Summarize attempt fails
+// (TDD 6.15). Any failure is logged and never propagated: a broken
+// notification integration must never be the thing that fails the run
+// (TDD 9.5).
+func fireNotifyHook(ctx context.Context, cfg config.Config, prov, fallback provider.Provider, prs []model.PR, issues []model.Issue, log *slog.Logger) {
 	changed := append(notify.ChangesFromPRs(prs), notify.ChangesFromIssues(issues)...)
 	if len(changed) == 0 {
 		log.Debug("notify hook: nothing changed this run, skipping")
@@ -222,7 +250,14 @@ func fireNotifyHook(ctx context.Context, cfg config.Config, prov provider.Provid
 		return
 	}
 
-	summary := notify.Summarize(ctx, prov, changed, cfg.NotifyTimeout)
+	// The fallback Summarize attempt gets more headroom than NotifyTimeout
+	// (TDD 6.17's rationale: a one-shot local-model fallback can legitimately
+	// be slower per call), but deliberately not the full classification
+	// FallbackProviderTimeout — TDD 9.4/9.5 keeps the whole notify mechanism
+	// short by design so a slow hook never meaningfully delays the next
+	// scheduled run, and that intent should hold for its fallback path too.
+	summarizeFallbackTimeout := cfg.NotifyTimeout * 3
+	summary := notify.Summarize(ctx, prov, fallback, changed, cfg.NotifyTimeout, summarizeFallbackTimeout, log)
 	if err := notify.Fire(ctx, cfg.NotifyHook, cfg.NotifyTimeout, changed, summary); err != nil {
 		log.Warn("notify hook failed", "err", err, "changed", len(changed))
 		return

@@ -13,7 +13,7 @@ change in front of you.
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
 | 4 | Status classification | 4.1 – 4.14 |
 | 5 | Stale determination | 5.1 – 5.4 |
-| 6 | Provider / LLM hand-off | 6.1 – 6.10 |
+| 6 | Provider / LLM hand-off | 6.1 – 6.17 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
 | 9 | Notification hook | 9.1 – 9.6 |
@@ -495,6 +495,104 @@ reference them by name.
 - **And** the underlying agent profile trusts both tool names from the start (a
   static pre-approval list, set once at session construction), so switching
   which one is offered never triggers an interactive trust prompt mid-session
+
+### 6.11 A provider's kind is fixed by its name, never independently configured
+- **Given** a provider name (`kiro`, `ollama`, or any future name)
+- **When** a provider is constructed for either the primary or fallback slot
+- **Then** its invocation kind (session or one-shot) is determined solely by
+  that name, from one closed mapping in code — not by a separate `_KIND`
+  configuration value
+- **And** there is no configuration surface, environment variable, or code path
+  capable of pairing a name with a kind other than its fixed one (e.g. `ollama`
+  as session, `kiro` as one-shot) — the pairing is unrepresentable, not merely
+  rejected at validation time
+- **Note** this replaces the general `provider_kind` concept described in
+  POLICY.md's Architecture rules; POLICY.md needs a matching update when this
+  lands
+
+### 6.12 Primary and fallback are the same kind of slot
+- **Given** the tool is configured with a primary provider and, optionally, a
+  fallback provider
+- **When** either slot is constructed
+- **Then** both go through the identical construction path, taking a provider
+  name and a model, differing only in which configuration values feed them and
+  when each is invoked
+- **And** no code path treats one slot as inherently the "real" provider and
+  the other as a special case — either slot may hold any supported provider
+  name
+
+### 6.13 Fallback fires only after the primary's retry budget is exhausted
+- **Given** a fallback provider is configured
+- **When** the primary provider's response fails validation or the primary
+  times out, repeated through `llm_retry_cap` retries with no valid result
+- **Then** the tool invokes the fallback provider for that same request, from
+  a fresh attempt (not itself inheriting the primary's exhausted retry count)
+- **And** the fallback is never invoked before the primary's full retry budget
+  (including the fast-fail timeout path of 6.5) has been exhausted — attempts
+  are never interleaved between the two providers
+- **And** when no fallback is configured, behavior is unchanged from today:
+  exhausting the primary's retries marks the row unverified (6.4)
+
+### 6.14 Fallback exhaustion still falls back to unverified
+- **Given** a fallback provider is configured and invoked (6.13)
+- **When** the fallback's own response also fails validation or times out
+  through its own retry budget
+- **Then** the row is marked unverified, exactly as if no fallback had been
+  configured — the fallback does not get a separate, larger retry budget or a
+  further fallback of its own
+
+### 6.15 Fallback applies to both classification and summarization
+- **Given** a fallback provider is configured
+- **When** either a classification (`Invoke`) or a notification summary
+  (`Summarize`) call to the primary provider fails
+- **Then** the same fallback provider is invoked for that call, using the same
+  trigger rule (6.13) appropriate to that call's own retry shape (`Invoke`'s
+  multi-retry loop per 6.4, `Summarize`'s single-attempt-then-plain-fallback
+  per 6.9)
+
+### 6.16 Every exhaustion and fallback outcome is logged at a level matching its severity, and a fallback verdict is persisted with provenance
+- **Given** the primary provider's retry budget is exhausted (6.13)
+- **When** the tool decides what to do next
+- **Then** it logs that exhaustion — at WARN level when a fallback is
+  configured (degraded but recoverable: another attempt is about to be made),
+  or at ERROR level when no fallback is configured (the row is going straight
+  to unverified)
+- **And** when a fallback is then invoked and produces a valid result, the tool
+  logs that outcome at INFO level, identifying the item and naming the
+  fallback provider that produced it — succeeding via fallback is a normal,
+  expected recovery, not a warning-worthy condition
+- **And** when the fallback's own retry budget is also exhausted (6.14), the
+  tool logs that at ERROR level — the row is now going to unverified with no
+  further recourse
+- **And** a classification result (`Invoke`) that came from the fallback
+  provider is, in addition to being logged, recorded in the persisted record
+  (`model.PR` / `model.Issue`): a field carries that this item's current
+  judgment came from the fallback provider, round-tripped through the YAML
+  store like any other field
+- **And** that field is always written explicitly — every persisted item
+  states plainly whether its current judgment came from the primary or the
+  fallback provider; the normal primary case is never expressed by omitting
+  the field, so a reader of the raw YAML never has to know an absence
+  convention to tell the two apart
+- **Note** a `Summarize` fallback (6.15) is not persisted — the notification
+  hook payload is transient, not stored — so the persistence half of this
+  rubric covers `Invoke` results only; the logging half applies to both
+  `Invoke` and `Summarize` fallback attempts alike
+
+### 6.17 The fallback provider is bounded by its own, independently configured timeout
+- **Given** a fallback provider is configured
+- **When** the fallback is invoked (6.13, 6.15)
+- **Then** each fallback call is bounded by its own timeout value, distinct
+  from the primary's `provider_timeout` (TDD 6.5) — not the same shared value
+  applied to both slots
+- **And** the primary's own timeout is never affected by the fallback's
+  configuration; a hung primary still fails over at its existing bound
+- **Note** discovered necessary by live verification, not assumed in advance
+  (ANTI-PATTERNS #6): a one-shot fallback backed by a local model can
+  legitimately take longer per call than a session-based primary, so forcing
+  both slots through one shared timeout would either make the fallback
+  unusably tight or make every ordinary primary hang take proportionally
+  longer to detect
 
 ---
 

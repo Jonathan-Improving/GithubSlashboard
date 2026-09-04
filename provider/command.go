@@ -29,35 +29,48 @@ func NewCommandProvider(name string, argv []string) (*CommandProvider, error) {
 	return &CommandProvider{name: name, argv: argv}, nil
 }
 
-// kiroDefaultArgv is the MVP Kiro CLI invocation: a non-interactive, headless
-// chat that reads the prompt from stdin and prints the model's reply to stdout.
-// It pins a lean agent profile (no tools, no MCP servers) and an explicit model
-// so classification runs are cheap and free of unrelated tool context. The
-// prompt (the PR event trail) is delivered on stdin as the positional input.
-var kiroDefaultArgv = []string{
-	"kiro-cli", "chat", "--no-interactive",
-	"--agent", "githubslashboard",
-	"--model", "glm-5",
-	"--trust-tools=",
-}
-
-// NewKiroProvider builds the MVP Kiro CLI provider (TDD 6.1).
-func NewKiroProvider() (*CommandProvider, error) {
-	return NewCommandProvider("kiro", kiroDefaultArgv)
-}
-
-// New selects a provider by name/command. An explicit command (from config)
-// wins; otherwise the named MVP defaults are used. This is the single seam
-// through which core code obtains a provider (POLICY: pluggable, never core).
-func New(name string, command []string) (Provider, error) {
-	if len(command) > 0 {
-		return NewCommandProvider(name, command)
+// kiroOneShotArgv is the Kiro CLI one-shot invocation: a non-interactive,
+// headless chat that reads the prompt from stdin and prints the model's reply
+// to stdout. It pins a lean agent profile (no tools, no MCP servers) and the
+// given model so classification runs are cheap and free of unrelated tool
+// context. The prompt (the PR event trail) is delivered on stdin as the
+// positional input.
+func kiroOneShotArgv(model string) []string {
+	return []string{
+		"kiro-cli", "chat", "--no-interactive",
+		"--agent", "githubslashboard",
+		"--model", model,
+		"--trust-tools=",
 	}
-	switch strings.ToLower(name) {
-	case "kiro", "":
-		return NewKiroProvider()
+}
+
+// ollamaArgv is the one-shot Ollama invocation: `ollama run <model>`, prompt
+// delivered on stdin. This is the fixed, blackboxed shape for the oneshot kind
+// (POLICY: no raw-command escape hatch) — the only thing that varies between
+// deployments or between the primary/fallback slot is which model is named.
+func ollamaArgv(model string) []string {
+	return []string{"ollama", "run", model}
+}
+
+// newOneShotProvider builds a CommandProvider for a one-shot-kind name (TDD
+// 6.11), using that name's fixed, blackboxed argv shape parameterized only by
+// model. name must already be known-oneshot (checked by the caller via
+// KindForName) — this function itself only knows how to build the argv for
+// each currently-supported one-shot name.
+func newOneShotProvider(name, model string) (*CommandProvider, error) {
+	switch name {
+	case "kiro":
+		if model == "" {
+			model = defaultKiroModel
+		}
+		return NewCommandProvider(name, kiroOneShotArgv(model))
+	case "ollama":
+		if model == "" {
+			return nil, fmt.Errorf("provider %q requires a model", name)
+		}
+		return NewCommandProvider(name, ollamaArgv(model))
 	default:
-		return nil, fmt.Errorf("unknown provider %q and no explicit command configured", name)
+		return nil, fmt.Errorf("no one-shot construction known for provider %q", name)
 	}
 }
 

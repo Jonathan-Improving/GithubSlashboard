@@ -62,6 +62,12 @@ type Issue struct {
 	// mistaken for a cache.
 	InputFingerprint string `yaml:"input_fingerprint,omitempty" json:"input_fingerprint,omitempty"`
 
+	// Provider records which provider slot produced this issue's current
+	// judgment (TDD 6.16). Mirrors model.PR's field — deliberately never
+	// omitted, so every record states plainly whether its judgment came from
+	// the primary or the fallback provider.
+	Provider ProviderSource `yaml:"provider" json:"provider"`
+
 	// Events is the chronological event trail. Not persisted.
 	Events []Event `yaml:"-" json:"-"`
 
