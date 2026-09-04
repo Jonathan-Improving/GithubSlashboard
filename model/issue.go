@@ -53,8 +53,23 @@ type Issue struct {
 	// such a row has.
 	LastActivity time.Time `yaml:"last_activity,omitempty" json:"last_activity,omitempty"`
 
+	// InputFingerprint is an opaque hash of every deterministic input to an open
+	// issue's judgment: CommentCount and the most recent trail event. Mirrors
+	// model.PR's field for the same reason (TDD 8.8) — it exists solely so a
+	// later run can detect "nothing worth re-judging happened" without growing
+	// the schema further as new inputs start mattering; only the hash's inputs
+	// would change. Never set when Unverified, so a degraded judgment is never
+	// mistaken for a cache.
+	InputFingerprint string `yaml:"input_fingerprint,omitempty" json:"input_fingerprint,omitempty"`
+
 	// Events is the chronological event trail. Not persisted.
 	Events []Event `yaml:"-" json:"-"`
+
+	// WasJudged is true when this run's classification actually reached the
+	// provider for a fresh judgment, mirroring model.PR's field for the same
+	// reason (TDD 8.8, 8.9, 9.1) — a run-local signal for the notification
+	// hook's change collection, never persisted.
+	WasJudged bool `yaml:"-" json:"-"`
 }
 
 // Key uniquely identifies an issue across the tracked set and the store. It

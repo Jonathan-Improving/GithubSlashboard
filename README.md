@@ -87,6 +87,8 @@ below at any location you prefer.
 | Re-crawl settled items already in the store | `GSB_INCLUDE_TERMINAL` | `-include-terminal` | `false` (skip them, reuse cached record) |
 | PR stale age threshold | `GSB_STALE_AGE_THRESHOLD` | — | `960h` (40 days) |
 | Issue stale age threshold | `GSB_ISSUE_STALE_AGE_THRESHOLD` | — | `2880h` (120 days) |
+| Notification hook command | `GSB_NOTIFY_HOOK` | — | _(unset — inert)_ |
+| Notification hook timeout | `GSB_NOTIFY_TIMEOUT` | — | `10s` |
 | Verbose logging | — | `-verbose` | off |
 
 For example, to write the status document to a location of your choosing:

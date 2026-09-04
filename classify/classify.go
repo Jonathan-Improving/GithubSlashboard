@@ -21,26 +21,30 @@ import (
 
 // Classifier judges PRs using a provider under a configuration. It holds no
 // mutable per-PR state, so PRs may be classified concurrently. prior is the
-// store's existing records keyed by PR key, consulted read-only to detect an
-// unchanged open PR and skip the provider call for it (TDD 4.13); it is never
-// written to by the classifier.
+// store's existing PR records keyed by PR key, and priorIssues the existing
+// issue records keyed by issue key, both consulted read-only to detect an
+// unchanged open item and skip the provider call for it (TDD 4.13, 8.8); they
+// are never written to by the classifier.
 type Classifier struct {
-	prov  provider.Provider
-	cfg   config.Config
-	log   *slog.Logger
-	now   func() time.Time
-	prior map[string]model.PR
+	prov        provider.Provider
+	cfg         config.Config
+	log         *slog.Logger
+	now         func() time.Time
+	prior       map[string]model.PR
+	priorIssues map[string]model.Issue
 }
 
 // New builds a Classifier. now is injectable for deterministic tests; pass
 // time.Now in production. prior is the store's existing PR records keyed by PR
-// key (TDD 4.13); pass nil or an empty map when there is no prior store (e.g.
-// first run) — every PR is then treated as first-seen and reaches the provider.
-func New(prov provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR) *Classifier {
+// key (TDD 4.13), and priorIssues the existing issue records keyed by issue key
+// (TDD 8.8); pass nil or an empty map for either when there is no prior store
+// (e.g. first run) — every item is then treated as first-seen and reaches the
+// provider.
+func New(prov provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR, priorIssues map[string]model.Issue) *Classifier {
 	if now == nil {
 		now = time.Now
 	}
-	return &Classifier{prov: prov, cfg: cfg, log: log, now: now, prior: prior}
+	return &Classifier{prov: prov, cfg: cfg, log: log, now: now, prior: prior, priorIssues: priorIssues}
 }
 
 // ClassifyAll classifies every PR, bounding provider fan-out by the configured
@@ -199,6 +203,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		pr.Emoji = old.Emoji
 		pr.Unverified = false
 		pr.InputFingerprint = fp
+		// Carried forward unchanged: this run never reached the provider for
+		// this PR, so it is not part of the notification hook's change set
+		// (TDD 9.1). WasJudged already defaults false; left unset here for
+		// clarity rather than relying solely on the zero value.
+		pr.WasJudged = false
 		return pr
 	}
 
@@ -232,6 +241,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// 4.14), and old.Unverified is already checked above regardless — but
 		// leaving the field empty makes the intent explicit rather than relying
 		// solely on the Unverified guard.
+		// The provider WAS reached this run (that is what produced the
+		// unverified result), so this still counts as "changed" for the
+		// notification hook (TDD 9.1) — its inputs moved enough to warrant an
+		// attempt, even though the attempt did not yield a usable verdict.
+		pr.WasJudged = true
 		return pr
 	}
 
@@ -323,6 +337,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// Stamp the fingerprint of the inputs that produced this judgment, so a
 	// later run can detect "unchanged" and skip the provider call (TDD 4.13).
 	pr.InputFingerprint = fp
+	// The provider was reached, but only an open-bucket outcome counts as
+	// "changed" for the notification hook (TDD 9.2) — a PR that landed in
+	// Stale this run is a settled fact the operator is not expected to act on
+	// further, even though classification consulted the provider to get there.
+	pr.WasJudged = pr.Bucket == model.BucketOpen
 	return pr
 }
 

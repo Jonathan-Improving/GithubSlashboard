@@ -2,7 +2,11 @@ package classify
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Jonathan-Improving/githubslashboard/model"
 	"github.com/Jonathan-Improving/githubslashboard/provider"
@@ -124,6 +128,25 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		return iss
 	}
 
+	// Unchanged-since-last-run short-circuit (TDD 8.8), mirroring the PR path
+	// (TDD 4.13). An issue's only deterministic inputs are its comment count and
+	// most recent trail event — no CI, mergeability, or review-thread concepts
+	// exist for an issue — so the fingerprint is simpler than a PR's.
+	fp := issueFingerprint(iss)
+	if old, ok := c.priorIssues[iss.Key()]; ok && !old.Unverified && old.InputFingerprint != "" && old.InputFingerprint == fp {
+		iss.Bucket = old.Bucket
+		iss.Action = old.Action
+		iss.Priority = old.Priority
+		iss.Companion = old.Companion
+		iss.Emoji = old.Emoji
+		iss.Unverified = false
+		iss.InputFingerprint = fp
+		// Carried forward unchanged: not part of the notification hook's
+		// change set this run (TDD 9.1).
+		iss.WasJudged = false
+		return iss
+	}
+
 	res := c.judgeIssue(ctx, iss)
 	if res.Unverified {
 		iss.Unverified = true
@@ -133,6 +156,11 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		iss.Companion = ""
 		iss.Emoji = ""
 		c.log.Warn("issue classification unverified", "issue", iss.Key(), "attempts", res.Attempts, "reason", res.Err)
+		// Deliberately not stamping InputFingerprint here: an unverified result
+		// must never be treated as a cached judgment on a later run (TDD 8.8, 8.9).
+		// The provider WAS reached this run, so this still counts as "changed"
+		// for the notification hook (TDD 9.1) even without a usable verdict.
+		iss.WasJudged = true
 		return iss
 	}
 
@@ -170,6 +198,15 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		iss.Bucket = model.IssueBucketStale
 		iss.Action = ""
 	}
+
+	// Stamp the fingerprint of the inputs that produced this judgment, so a
+	// later run can detect "unchanged" and skip the provider call (TDD 8.8).
+	iss.InputFingerprint = issueFingerprint(iss)
+	// The provider was reached, but only an open-bucket outcome counts as
+	// "changed" for the notification hook (TDD 9.2) — an issue that landed in
+	// Stale this run is a settled fact the operator is not expected to act on
+	// further, even though classification consulted the provider to get there.
+	iss.WasJudged = iss.Bucket == model.IssueBucketOpen
 	return iss
 }
 
@@ -188,6 +225,24 @@ func (c *Classifier) issueStaleByAge(iss model.Issue) bool {
 		last = iss.Created
 	}
 	return c.now().Sub(last) >= c.cfg.IssueStaleAgeThreshold
+}
+
+// issueFingerprint hashes every deterministic input to an open issue's
+// judgment: CommentCount and the most recent trail event (timestamp, kind, and
+// text). Mirrors classify.fingerprint for PRs (TDD 4.13) with the simpler set
+// of inputs an issue actually has — no CI, mergeability, or review-thread
+// concepts exist for an issue. Two calls with the same inputs always produce
+// the same fingerprint; the result is opaque and has no meaning beyond
+// equality comparison.
+func issueFingerprint(iss model.Issue) string {
+	var last model.Event
+	if n := len(iss.Events); n > 0 {
+		last = iss.Events[n-1]
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|%s|%d",
+		last.Timestamp.UTC().Format(time.RFC3339Nano), last.Kind, last.Text, iss.CommentCount)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // applyIssueNote consults the provider for a note and priority on an issue whose

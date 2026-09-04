@@ -8,6 +8,7 @@ Worked examples for getting GithubSlashboard running.
 | [`scheduling/run-githubslashboard.sh`](scheduling/run-githubslashboard.sh) | Wrapper script that supplies the environment and fetches the token at run time. |
 | [`scheduling/com.example.githubslashboard.plist`](scheduling/com.example.githubslashboard.plist) | launchd agent for macOS. |
 | [`scheduling/crontab.example`](scheduling/crontab.example) | crontab entries for Linux. |
+| [`notify-hook/notify-desktop.sh`](notify-hook/notify-desktop.sh) | `GSB_NOTIFY_HOOK` target that turns a notification payload into a real desktop notification. |
 
 ---
 
@@ -58,12 +59,14 @@ choosing it:
 - Each item's event trail is handed over **by file**, not typed into the session — a
   large trail would exceed the terminal's command-length limit and be silently
   truncated.
-- The verdict comes back **structurally**, through a single Model Context Protocol
-  tool the provider hosts on a loopback address, rather than by scraping terminal
-  output.
-- The harness is given exactly two capabilities: a read tool scoped to the prompt
-  directory, and that verdict tool. Nothing else — no shell, no network, no
-  unrelated servers.
+- The verdict comes back **structurally**, through a Model Context Protocol tool
+  the provider hosts on a loopback address, rather than by scraping terminal
+  output. A second, separate tool returns a notification summary sentence
+  (below) — the two are mutually exclusive per turn, so the harness is never
+  offered a choice between them.
+- The harness is given exactly three capabilities: a read tool scoped to the
+  prompt directory, the verdict tool, and the summary tool. Nothing else — no
+  shell, no network, no unrelated servers.
 
 Concurrency works by running a pool of independent sessions, since one harness
 serves one request at a time. The pool is sized to the classifier's worker limit,
@@ -84,10 +87,33 @@ once or twice, and a call that keeps failing or times out yields a row marked
 
 ### Writing your own provider
 
-The interface is one method — take a request, return raw text — so adding a backend
-means supplying an argv, not writing code. If a CLI can read a prompt and print a
-JSON object, `GSB_PROVIDER_CMD` is all it needs. See `sdd/SCHEMA.md` for the exact
-request and response contract, and `sdd/TECH.md` for where the boundary sits.
+The interface has two methods: classify one item (take a request, return raw
+text) and summarize a set of changes (take a plain prompt, return a plain
+sentence — see [Notification hook](#notification-hook) below). Adding a
+backend means supplying an argv, not writing code. If a CLI can read a prompt
+and print a JSON object, `GSB_PROVIDER_CMD` is all it needs. See
+`sdd/SCHEMA.md` for the exact request and response contracts, and
+`sdd/TECH.md` for where the boundary sits.
+
+---
+
+## Notification hook
+
+Beyond the status document, the tool can prompt you to look at it: after a run
+in which at least one open PR or issue actually changed enough to need a fresh
+judgment, it asks the provider for a one-sentence summary and writes a small
+JSON payload to a command of your choosing.
+
+```bash
+export GSB_NOTIFY_HOOK="$PWD/examples/notify-hook/notify-desktop.sh"
+```
+
+Unset (the default), the mechanism is entirely inert — no summary is
+requested, no process is spawned. See `sdd/SCHEMA.md`'s Notification hook
+section for the exact payload shape, and
+[`notify-hook/notify-desktop.sh`](notify-hook/notify-desktop.sh) for a worked,
+runnable example that turns the payload into a real desktop notification
+(`terminal-notifier` on macOS, `notify-send` on Linux).
 
 ---
 

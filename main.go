@@ -20,6 +20,7 @@ import (
 	"github.com/Jonathan-Improving/githubslashboard/config"
 	ghacq "github.com/Jonathan-Improving/githubslashboard/github"
 	"github.com/Jonathan-Improving/githubslashboard/model"
+	"github.com/Jonathan-Improving/githubslashboard/notify"
 	"github.com/Jonathan-Improving/githubslashboard/provider"
 	"github.com/Jonathan-Improving/githubslashboard/render"
 	"github.com/Jonathan-Improving/githubslashboard/store"
@@ -166,7 +167,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			}
 		}()
 	}
-	classifier := classify.New(prov, cfg, log, time.Now, prior)
+	classifier := classify.New(prov, cfg, log, time.Now, prior, priorIssues)
 	classifyStart := time.Now()
 	classified := classifier.ClassifyAll(ctx, fetched)
 	log.Info("classified PRs", "count", len(classified), "phase", "classify", "took", time.Since(classifyStart).String(), "workers", cfg.ClassifyWorkers)
@@ -195,7 +196,38 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	log.Info("rendered status document", "path", cfg.OutputPath, "phase", "render", "took", time.Since(renderStart).String())
 
+	// Notification hook (TDD § 9). Deliberately last: the status document is
+	// already written by this point, so a failing or slow hook can never delay
+	// or block the dashboard output itself (TDD 9.5). Entirely inert when no
+	// hook command is configured (TDD 9.4).
+	fireNotifyHook(ctx, cfg, prov, classified, classifiedIssues, log)
+
 	return nil
+}
+
+// fireNotifyHook collects every open PR/issue that reached the provider for a
+// fresh judgment this run (TDD 9.1, 9.2), and — only when that set is
+// non-empty and a hook command is configured — asks the provider for a short
+// summary and delivers the JSON payload to the hook's stdin (TDD 9.3, 9.4).
+// Any failure is logged and never propagated: a broken notification
+// integration must never be the thing that fails the run (TDD 9.5).
+func fireNotifyHook(ctx context.Context, cfg config.Config, prov provider.Provider, prs []model.PR, issues []model.Issue, log *slog.Logger) {
+	changed := append(notify.ChangesFromPRs(prs), notify.ChangesFromIssues(issues)...)
+	if len(changed) == 0 {
+		log.Debug("notify hook: nothing changed this run, skipping")
+		return
+	}
+	if cfg.NotifyHook == "" {
+		log.Debug("notify hook: not configured, skipping", "changed", len(changed))
+		return
+	}
+
+	summary := notify.Summarize(ctx, prov, changed, cfg.NotifyTimeout)
+	if err := notify.Fire(ctx, cfg.NotifyHook, cfg.NotifyTimeout, changed, summary); err != nil {
+		log.Warn("notify hook failed", "err", err, "changed", len(changed))
+		return
+	}
+	log.Info("notify hook fired", "changed", len(changed))
 }
 
 // writeOutput writes the Markdown document to path, creating parent dirs.

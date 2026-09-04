@@ -93,4 +93,5 @@ entity be added without restructuring.
 | **state reason** | GitHub's own recorded reason a closed issue was closed (completed, not planned, duplicate, reopened). A hard fact the tool records verbatim, in contrast to a PR's closed sub-reason, which is inferred. |
 | **provider** | The configured language-model backend that performs inference (Kiro CLI for the MVP). |
 | **unverified** | A row whose status could not be model-verified after retries or provider failure, and so is not presented as authoritative. Distinct from a row that was deliberately never judged (an issue with no conversation), which is a fact, not a failure. |
+| **notification hook** | An optional configured shell command the tool runs after a run in which at least one open PR or issue needed a fresh judgment, delivering a short model-written summary and the changed items as JSON on its stdin. Exists to prompt the operator to look at the status document; a merged, closed, or stale item never appears in it, and it is entirely inert when unconfigured. |
 | **operator** | The single user the tool runs for. |

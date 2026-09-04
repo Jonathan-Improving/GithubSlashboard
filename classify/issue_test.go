@@ -24,6 +24,9 @@ func (failingProvider) Name() string { return "failing" }
 func (failingProvider) Invoke(ctx context.Context, req provider.Request, correction string) (string, error) {
 	return "", errors.New("provider unavailable")
 }
+func (failingProvider) Summarize(ctx context.Context, prompt string) (string, error) {
+	return "", errors.New("provider unavailable")
+}
 
 // issueClassifier builds a Classifier over the given provider at the fixed issue
 // reference time, using the default thresholds (PR 40 days, issue 120 days) so
@@ -37,7 +40,7 @@ func issueClassifier(p provider.Provider) *Classifier {
 	// would just repeat an identical rejection.
 	cfg.LLMRetryCap = 0
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(p, cfg, log, func() time.Time { return issueRefNow }, nil)
+	return New(p, cfg, log, func() time.Time { return issueRefNow }, nil, nil)
 }
 
 // openIssue builds an open issue with the given comment count and last activity.
@@ -54,6 +57,160 @@ func openIssue(comments int, lastActivity time.Time) model.Issue {
 		Events: []model.Event{
 			{Timestamp: lastActivity, Author: "op", Kind: model.EventStateTransition, Text: "opened"},
 		},
+	}
+}
+
+// issueClassifierWithPrior builds a Classifier with the given priorIssues store
+// map, backed by a countingProvider so tests can assert whether the provider
+// was actually invoked (TDD 8.8, 8.9).
+func issueClassifierWithPrior(out string, priorIssues map[string]model.Issue) (*Classifier, *countingProvider) {
+	cfg := config.Default()
+	cfg.GitHubToken = "tok"
+	cfg.ClassifyWorkers = 2
+	cfg.SkipFloorNotes = false
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cp := &countingProvider{out: out}
+	return New(cp, cfg, log, func() time.Time { return issueRefNow }, nil, priorIssues), cp
+}
+
+// priorUnchangedIssue and freshUnchangedIssue build a matching first-run/
+// second-run pair for the issue fingerprint, mirroring priorUnchangedPR /
+// freshUnchangedPR for PRs.
+func priorUnchangedIssue(events []model.Event, comments int) model.Issue {
+	base := model.Issue{Repo: "a/x", Number: 42, Role: model.IssueRoleAuthor, Events: events, CommentCount: comments}
+	fp := issueFingerprint(base)
+	return model.Issue{
+		Repo: "a/x", Number: 42, Role: model.IssueRoleAuthor,
+		Bucket: model.IssueBucketOpen, Action: model.IssueActionAwaitingResponse,
+		Priority: model.PriorityElevated, Companion: "cached issue note from last run", Emoji: "⏳",
+		Unverified: false, InputFingerprint: fp,
+	}
+}
+
+func freshUnchangedIssue(events []model.Event, comments int) model.Issue {
+	return model.Issue{
+		Repo: "a/x", Number: 42, Role: model.IssueRoleAuthor,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: events, CommentCount: comments,
+	}
+}
+
+func TestUnchangedOpenIssueSkipsProvider(t *testing.T) {
+	events := []model.Event{{Timestamp: issueRefNow.Add(-time.Hour), Kind: model.EventComment, Text: "any updates?"}}
+	prior := priorUnchangedIssue(events, 3)
+	fresh := freshUnchangedIssue(events, 3)
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"triage","priority":"neutral","companion":"provider should never be asked","emoji":"❌"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 0 {
+		t.Errorf("provider called %d times for an unchanged issue, want 0 (TDD 8.8)", cp.calls)
+	}
+	if got.Action != model.IssueActionAwaitingResponse || got.Companion != "cached issue note from last run" || got.Emoji != "⏳" {
+		t.Errorf("cached verdict not carried forward verbatim: %+v", got)
+	}
+	if got.InputFingerprint == "" {
+		t.Errorf("fingerprint must be stamped on the carried-forward record too")
+	}
+}
+
+func TestChangedCommentCountStillInvokesProviderForIssue(t *testing.T) {
+	events := []model.Event{{Timestamp: issueRefNow.Add(-time.Hour), Kind: model.EventComment, Text: "any updates?"}}
+	prior := priorUnchangedIssue(events, 3)
+	fresh := freshUnchangedIssue(events, 4) // one more comment landed
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_others","priority":"neutral","companion":"new comment changes things","emoji":"🔄"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when CommentCount changed, want 1 (TDD 8.9)", cp.calls)
+	}
+	if got.Action != model.IssueActionAwaitingOthers {
+		t.Errorf("action = %q, want the freshly judged value, not the stale cache", got.Action)
+	}
+}
+
+func TestChangedLastEventStillInvokesProviderForIssue(t *testing.T) {
+	priorEvents := []model.Event{{Timestamp: issueRefNow.Add(-2 * time.Hour), Kind: model.EventComment, Text: "any updates?"}}
+	freshEvents := []model.Event{{Timestamp: issueRefNow.Add(-time.Hour), Kind: model.EventComment, Text: "closing the loop here"}}
+	prior := priorUnchangedIssue(priorEvents, 3)
+	fresh := freshUnchangedIssue(freshEvents, 3)
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_others","priority":"neutral","companion":"new comment changes things","emoji":"🔄"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times for an issue with a new trail event, want 1 (TDD 8.9)", cp.calls)
+	}
+	if got.Action != model.IssueActionAwaitingOthers {
+		t.Errorf("action = %q, want the freshly judged value", got.Action)
+	}
+}
+
+func TestFirstSeenIssueAlwaysInvokesProvider(t *testing.T) {
+	fresh := freshUnchangedIssue([]model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "first comment"}}, 1)
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"triage","priority":"neutral","companion":"brand new issue","emoji":"✅"}`,
+		map[string]model.Issue{})
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times for a first-seen issue, want 1 (TDD 8.9)", cp.calls)
+	}
+	if got.Companion != "brand new issue" {
+		t.Errorf("expected the freshly judged companion, got %q", got.Companion)
+	}
+}
+
+func TestPreviouslyUnverifiedPriorAlwaysInvokesProviderForIssue(t *testing.T) {
+	events := []model.Event{{Timestamp: issueRefNow.Add(-time.Hour), Kind: model.EventComment, Text: "any updates?"}}
+	prior := priorUnchangedIssue(events, 3)
+	prior.Unverified = true // last run's judgment was degraded, never a real cache
+	prior.InputFingerprint = ""
+	fresh := freshUnchangedIssue(events, 3) // identical inputs otherwise
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"triage","priority":"neutral","companion":"now judged for real","emoji":"✅"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 1 {
+		t.Errorf("provider called %d times when the prior issue record was unverified, want 1 (TDD 8.9) — an unverified result must never be cached forward", cp.calls)
+	}
+	if got.Action != model.IssueActionTriage {
+		t.Errorf("expected the freshly judged action, got %q", got.Action)
+	}
+}
+
+// TestNoConversationIssueNeverConsultsFingerprint covers the 8.9 note: an issue
+// with no conversation is never sent to the model regardless of the prior
+// record, so the fingerprint machinery does not even apply to it.
+func TestNoConversationIssueNeverConsultsFingerprint(t *testing.T) {
+	fresh := freshUnchangedIssue(nil, 0) // no comments at all
+
+	c, cp := issueClassifierWithPrior(
+		`{"bucket":"open","action":"triage","priority":"neutral","companion":"should never be called","emoji":"❌"}`,
+		map[string]model.Issue{}) // no prior either, doubly proving it's the comment gate, not the cache, that applies
+
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if cp.calls != 0 {
+		t.Errorf("provider called %d times for an issue with no conversation, want 0 (TDD 8.3)", cp.calls)
+	}
+	if got.Action != model.IssueActionTriage {
+		t.Errorf("action = %q, want triage from hard facts alone", got.Action)
 	}
 }
 

@@ -72,7 +72,24 @@ func (c *CommandProvider) Invoke(ctx context.Context, req Request, correction st
 	if err != nil {
 		return "", err
 	}
+	return c.run(ctx, prompt)
+}
 
+// Summarize runs the subprocess for one plain-text prompt, bounded by ctx
+// (TDD 6.9). Unlike Invoke there is no Request to render and no vocabulary to
+// validate the response against — the prompt is used as-is and the raw stdout
+// is returned verbatim, since a summary sentence has no structure to parse.
+func (c *CommandProvider) Summarize(ctx context.Context, prompt string) (string, error) {
+	return c.run(ctx, prompt)
+}
+
+// run is the shared subprocess mechanics behind Invoke and Summarize: write
+// prompt to the configured command's stdin, bounded by ctx, and return its
+// stdout. Both call shapes reduce to the same "one prompt in, one response
+// out" subprocess pattern for a one-shot provider (TDD 6.2) — what differs
+// between them is entirely in how the caller built the prompt and what it does
+// with the response, not in how the process itself is run.
+func (c *CommandProvider) run(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...)
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer

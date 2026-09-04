@@ -131,6 +131,16 @@ type PR struct {
 
 	// Events is the chronological event trail (TDD 1.4). Not persisted.
 	Events []Event `yaml:"-" json:"-"`
+
+	// WasJudged is true when this run's classification actually reached the
+	// provider for a fresh judgment — a first-seen PR, one whose deterministic
+	// inputs changed, or one whose prior record was unverified (TDD 4.13,
+	// 4.14) — and false when the unchanged-input skip carried the prior verdict
+	// forward, or the item is not open at all (merged/closed/stale items never
+	// participate in the fingerprint concept). It exists solely to drive the
+	// notification hook's change collection (TDD 9.1, 9.2); it is a run-local
+	// signal, not a fact about the PR, so it is never persisted.
+	WasJudged bool `yaml:"-" json:"-"`
 }
 
 // Key uniquely identifies a PR across the tracked set and the store.

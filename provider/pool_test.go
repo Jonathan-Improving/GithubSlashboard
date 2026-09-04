@@ -29,6 +29,9 @@ func (m *countingMember) Invoke(ctx context.Context, req Request, correction str
 	atomic.AddInt32(&m.active, -1)
 	return goodJSON, nil
 }
+func (m *countingMember) Summarize(ctx context.Context, prompt string) (string, error) {
+	return goodJSON, nil
+}
 func (m *countingMember) Close() error {
 	m.mu.Lock()
 	m.closed = true

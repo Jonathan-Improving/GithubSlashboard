@@ -13,9 +13,10 @@ change in front of you.
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
 | 4 | Status classification | 4.1 – 4.14 |
 | 5 | Stale determination | 5.1 – 5.4 |
-| 6 | Provider / LLM hand-off | 6.1 – 6.8 |
+| 6 | Provider / LLM hand-off | 6.1 – 6.10 |
 | 7 | Execution & portability | 7.1 – 7.2 |
-| 8 | Issue tracking | 8.1 – 8.7 |
+| 8 | Issue tracking | 8.1 – 8.9 |
+| 9 | Notification hook | 9.1 – 9.5 |
 
 ## Configurable constants referenced below
 
@@ -464,6 +465,37 @@ reference them by name.
   to a bounded number of times before marking the row unverified (TDD 6.4) rather
   than stalling
 
+### 6.9 Summarization is a distinct, simpler provider contract
+- **Given** a request for a short free-text summary (not a classification)
+- **When** the provider is asked to produce it
+- **Then** it goes through a separate method from per-item classification (no
+  `Request`/`Constraints` shape, no bucket/action/priority vocabulary to
+  validate against, no self-correcting retry loop) — a plain prompt in, a plain
+  string out
+- **And** failure is handled proportionately to the stakes: since a summary is a
+  notification convenience rather than an authoritative judgment, a single
+  failed attempt does not retry with a quoted correction the way a
+  classification does; the caller falls back to a plain non-model string
+- **Note** this is Option B from the design discussion: forcing summarization
+  through the classification `Request` shape would mean empty/meaningless
+  `Repo`/`Number`/`Role`/`State` fields and synthetic non-GitHub entries stuffed
+  into `Events`, stretching a contract that is otherwise clean and
+  entity-generic in a principled way
+
+### 6.10 A session provider's two tools are mutually exclusive per turn
+- **Given** a session harness that can be asked either for a classification
+  verdict or for a summary
+- **When** either kind of turn begins
+- **Then** the harness is offered exactly one tool for that turn — the one
+  matching what was actually asked — never both at once
+- **And** which tool is offered is switched by the provider itself before the
+  turn starts, not left to the harness to infer from prompt wording alone,
+  because two simultaneously-callable tools invite the model to guess wrong
+  about which one this turn wants
+- **And** the underlying agent profile trusts both tool names from the start (a
+  static pre-approval list, set once at session construction), so switching
+  which one is offered never triggers an interactive trust prompt mid-session
+
 ---
 
 ## 7. Execution & portability
@@ -555,3 +587,81 @@ and an issue with no conversation is never sent to the model.
   operator-set state on either survives a refresh (2.3)
 - **And** a store written by a build that does not recognize issues preserves them
   rather than dropping them (2.5)
+
+### 8.8 An unchanged open issue skips the provider call
+- **Given** an open issue whose deterministic inputs — its comment count and its
+  most recent trail event — are identical to what they were when the stored
+  record was last classified, and that stored record was not itself unverified
+- **When** the tool classifies the issue on a subsequent run
+- **Then** it never calls the provider for this issue: the stored bucket, action,
+  priority, companion, and emoji are carried forward verbatim
+- **And** the GitHub fetch still runs in full beforehand — only the provider call
+  is skipped, never the fact-gathering that would detect a change
+- **Note** this mirrors 4.13 for the simpler issue trail, which has no CI,
+  mergeability, or review-thread concepts — an issue's disposition depends only
+  on how much has been said and when, so those are the only two inputs that need
+  to match
+
+### 8.9 A first-seen, changed, or previously-unverified issue always reaches the provider
+- **Given** an open issue that either has no prior stored record, or has a prior
+  record whose deterministic inputs (8.8) differ from the freshly fetched ones,
+  or has a prior record marked unverified
+- **When** the tool classifies the issue
+- **Then** the provider is called as normal — the skip in 8.8 never applies, so a
+  real change (a new comment, most obviously) is never mistaken for a repeat, and
+  a previously degraded judgment is never cached forward as if it were settled
+- **Note** an issue that was never worth judging in the first place (8.3, no
+  conversation) has no fingerprint to compare — it is classified from hard facts
+  alone either way, so 8.8/8.9 do not apply to it
+
+---
+
+## 9. Notification hook
+
+### 9.1 A hook fires only when something actually needed judging
+- **Given** a completed classification pass over open PRs and issues
+- **When** the tool determines whether to notify
+- **Then** it collects exactly the open items that reached the provider this run
+  — first-seen, changed (4.13, 8.8), or previously unverified — and fires the
+  hook only when that set is non-empty
+- **And** an item carried forward unchanged never appears in the set, and a run
+  where every item was unchanged produces no notification at all
+- **Note** this reuses the same population the fingerprint skip already
+  distinguishes; no second change-detection mechanism is introduced
+
+### 9.2 Merged, closed, and stale items never trigger the hook
+- **Given** a PR that merged or closed, or any item (PR or issue) that aged or
+  was judged into the stale bucket this run
+- **When** the tool determines whether to notify
+- **Then** that item never appears in the hook's payload, even though its floor
+  note may have consulted the provider this run (TDD 4.1, 4.2, 8.2)
+- **Note** a settled item is not something the operator is expected to act on
+  further; the fingerprint concept (9.1) has no floor/stale equivalent, and a
+  terminal item's own floor-note call is not a "change" in that sense
+
+### 9.3 The hook payload carries the new state, not a diff
+- **Given** a non-empty set of changed items (9.1)
+- **When** the payload is built
+- **Then** each entry carries the item's identity and its freshly judged
+  bucket/action/companion/priority — never the item's previous state — because
+  the hook exists to prompt a look at the status document, not to reconstruct
+  history the document already is the record of
+- **And** the payload also carries one short model-generated summary sentence
+  covering the whole set, sized for a desktop notification rather than the
+  document itself
+
+### 9.4 The hook is a configured shell command receiving JSON on stdin
+- **Given** `GSB_NOTIFY_HOOK` configured to a shell command
+- **When** the hook fires (9.1)
+- **Then** the tool writes the JSON payload (9.3) to that command's stdin and
+  waits up to `GSB_NOTIFY_TIMEOUT` for it to exit
+- **And** when `GSB_NOTIFY_HOOK` is unset, the hook mechanism is inert — no
+  process is spawned, no summary is requested, and classification is unaffected
+
+### 9.5 A failing or slow hook never fails the run
+- **Given** the hook command exits non-zero, cannot be started, or exceeds
+  `GSB_NOTIFY_TIMEOUT`
+- **When** this happens
+- **Then** the tool logs it and continues — the status document has already
+  been written by this point, and a broken notification integration must never
+  be the thing that breaks the dashboard

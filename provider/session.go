@@ -38,6 +38,11 @@ type SessionProvider struct {
 	nudge     string
 	nudgeCap  int
 	promptDir string
+	// verdictTool and summaryTool are the tool names the sink toggles between
+	// per turn (TDD 6.10) — set once at construction, mirroring what the agent
+	// profile was provisioned with.
+	verdictTool string
+	summaryTool string
 
 	mu      sync.Mutex // one session serves one request at a time
 	started bool
@@ -68,40 +73,57 @@ type inputTransport interface {
 	Close() error
 }
 
-// responseSink is the read half of a session: the harness posts its verdict
+// responseSink is the read half of a session: the harness posts its result
 // here (out of band from the terminal) and the provider waits for it. Await
-// blocks until a verdict arrives for the pending request or ctx expires.
+// blocks until a result arrives for the pending request or ctx expires. It also
+// controls which of the sink's mutually exclusive tools (TDD 6.10) is offered
+// for the turn about to start.
 type responseSink interface {
-	// Await blocks until the harness posts a verdict or ctx is done. The
-	// returned string is the raw JSON verdict, parsed by the shared parser.
+	// Await blocks until the harness posts a result or ctx is done. The
+	// returned string is raw JSON (a verdict) or the raw tool arguments (a
+	// summary); parsing is the caller's responsibility.
 	Await(ctx context.Context) (string, error)
-	// Drain discards any verdict left pending from a prior turn, so a new
+	// Drain discards any result left pending from a prior turn, so a new
 	// request cannot consume a stale one.
 	Drain()
 	// WaitReady blocks until the harness has connected to the sink (proving the
-	// verdict path works), or ctx is done.
+	// result path works), or ctx is done.
 	WaitReady(ctx context.Context) error
 	// Close releases the sink's resources (e.g. stops the HTTP listener).
 	Close() error
-	// Endpoint reports where the harness should post verdicts (e.g. an MCP
+	// Endpoint reports where the harness should post results (e.g. an MCP
 	// URL), for provisioning the harness profile. Empty when not applicable.
 	Endpoint() string
+	// SetActiveTool switches which tool the sink advertises for the next turn
+	// (TDD 6.10): the verdict tool for a classification, the summary tool for a
+	// summarization. Called before the prompt for that turn is sent.
+	SetActiveTool(name string)
 }
 
 // newSessionProvider builds a SessionProvider over an input transport and a
 // response sink. clearCmd is the harness's context-reset command (e.g. "/clear"
-// for Kiro), sent before every request. It is unexported so construction goes
-// through New, keeping a single provider seam.
-func newSessionProvider(name string, t inputTransport, sink responseSink, clearCmd string, settle, ready time.Duration) *SessionProvider {
+// for Kiro), sent before every request. verdictTool and summaryTool are the
+// tool names the sink toggles between per turn (TDD 6.10); defaults are applied
+// if either is empty, matching the sink's own MVP defaults. It is unexported so
+// construction goes through New, keeping a single provider seam.
+func newSessionProvider(name string, t inputTransport, sink responseSink, clearCmd string, settle, ready time.Duration, verdictTool, summaryTool string) *SessionProvider {
+	if verdictTool == "" {
+		verdictTool = verdictToolDefault
+	}
+	if summaryTool == "" {
+		summaryTool = summaryToolDefault
+	}
 	return &SessionProvider{
-		name:      name,
-		transport: t,
-		sink:      sink,
-		clearCmd:  clearCmd,
-		settle:    settle,
-		ready:     ready,
-		nudge:     defaultNudge,
-		nudgeCap:  defaultNudgeCap,
+		name:        name,
+		transport:   t,
+		sink:        sink,
+		clearCmd:    clearCmd,
+		settle:      settle,
+		ready:       ready,
+		nudge:       defaultNudge,
+		nudgeCap:    defaultNudgeCap,
+		verdictTool: verdictTool,
+		summaryTool: summaryTool,
 	}
 }
 
@@ -128,22 +150,8 @@ func (s *SessionProvider) Invoke(ctx context.Context, req Request, correction st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.started {
-		if err := s.transport.Start(ctx); err != nil {
-			return "", fmt.Errorf("provider %s: start session: %w", s.name, err)
-		}
-		// Wait until the harness has connected to the sink, proving the verdict
-		// path works before we submit anything (harness-agnostic readiness).
-		readyCtx := ctx
-		if s.ready > 0 {
-			var cancel context.CancelFunc
-			readyCtx, cancel = context.WithTimeout(ctx, s.ready)
-			defer cancel()
-		}
-		if err := s.sink.WaitReady(readyCtx); err != nil {
-			return "", fmt.Errorf("provider %s: %w", s.name, err)
-		}
-		s.started = true
+	if err := s.ensureStarted(ctx); err != nil {
+		return "", err
 	}
 
 	prompt, err := buildPrompt(req, correction)
@@ -151,83 +159,179 @@ func (s *SessionProvider) Invoke(ctx context.Context, req Request, correction st
 		return "", err
 	}
 
+	// This turn wants a classification verdict, not a summary (TDD 6.10): the
+	// sink must offer only the verdict tool so the harness cannot call the
+	// wrong one.
+	s.sink.SetActiveTool(s.verdictTool)
+
+	if err := s.prepareTurn(ctx); err != nil {
+		return "", err
+	}
+
+	if err := s.sendPrompt(ctx, prompt, "classify it and return your verdict via the verdict tool"); err != nil {
+		return "", err
+	}
+
+	// Wait for the harness to post its verdict through the sink; the tool call
+	// is the completion signal (TDD 6.8). If the harness ends its turn WITHOUT
+	// calling the tool, awaitResult re-nudges it rather than blocking until the
+	// overall timeout — the deterministic-harness failsafe.
+	raw, err := s.awaitResult(ctx, s.nudge)
+	if err != nil {
+		return "", fmt.Errorf("provider %s: await verdict: %w", s.name, err)
+	}
+
+	if err := s.finishTurn(ctx); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// Summarize resets the harness, submits a plain summary prompt, and waits for
+// the harness to post its sentence through the sink's summary tool (TDD 6.9).
+// It shares Invoke's session lifecycle (lazy start, clear-context ceremony,
+// prompt delivery, turn cleanup) but skips the nudge/retry machinery: a
+// summary is a notification convenience, not an authoritative judgment, so one
+// attempt is proportionate — the caller falls back to a plain string on error
+// rather than retrying with a quoted correction.
+func (s *SessionProvider) Summarize(ctx context.Context, prompt string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureStarted(ctx); err != nil {
+		return "", err
+	}
+
+	// This turn wants a summary sentence, not a classification (TDD 6.10): the
+	// sink must offer only the summary tool.
+	s.sink.SetActiveTool(s.summaryTool)
+
+	if err := s.prepareTurn(ctx); err != nil {
+		return "", err
+	}
+
+	if err := s.sendPrompt(ctx, prompt, "write your one-sentence summary and return it via the summary tool"); err != nil {
+		return "", err
+	}
+
+	// No nudge on a missed tool call: a single attempt is enough for a
+	// notification convenience, and the caller already has a plain-string
+	// fallback path for exactly this case.
+	raw, err := s.awaitResult(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("provider %s: await summary: %w", s.name, err)
+	}
+
+	if err := s.finishTurn(ctx); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// ensureStarted launches the harness session on first use and waits for it to
+// connect to the sink, proving the result path works before anything is sent.
+func (s *SessionProvider) ensureStarted(ctx context.Context) error {
+	if s.started {
+		return nil
+	}
+	if err := s.transport.Start(ctx); err != nil {
+		return fmt.Errorf("provider %s: start session: %w", s.name, err)
+	}
+	readyCtx := ctx
+	if s.ready > 0 {
+		var cancel context.CancelFunc
+		readyCtx, cancel = context.WithTimeout(ctx, s.ready)
+		defer cancel()
+	}
+	if err := s.sink.WaitReady(readyCtx); err != nil {
+		return fmt.Errorf("provider %s: %w", s.name, err)
+	}
+	s.started = true
+	return nil
+}
+
+// prepareTurn resets the harness context so each turn starts a priori, with no
+// residue from the previous one (TDD 6.7), and drains any stale pending result.
+func (s *SessionProvider) prepareTurn(ctx context.Context) error {
 	// Reset context between requests so each PR is judged a priori (TDD 6.7).
 	// The harness only accepts a slash command when idle — sent mid-turn it is
 	// queued as chat and the conversation never resets, so the context grows
 	// unbounded across PRs. Gate every command on an idle harness.
 	if s.clearCmd != "" {
 		if err := s.waitIdleBounded(ctx); err != nil {
-			return "", fmt.Errorf("provider %s: wait idle before clear: %w", s.name, err)
+			return fmt.Errorf("provider %s: wait idle before clear: %w", s.name, err)
 		}
 		if err := s.transport.SendLine(s.clearCmd); err != nil {
-			return "", fmt.Errorf("provider %s: send clear: %w", s.name, err)
+			return fmt.Errorf("provider %s: send clear: %w", s.name, err)
 		}
 		// Wait for the reset to complete (harness returns to idle) before the
 		// prompt, so the prompt is not queued behind the clear.
 		if err := s.waitIdleBounded(ctx); err != nil {
-			return "", fmt.Errorf("provider %s: wait idle after clear: %w", s.name, err)
+			return fmt.Errorf("provider %s: wait idle after clear: %w", s.name, err)
 		}
 	}
 	if err := s.transport.Reset(); err != nil {
-		return "", fmt.Errorf("provider %s: reset: %w", s.name, err)
+		return fmt.Errorf("provider %s: reset: %w", s.name, err)
 	}
-
 	s.sink.Drain()
+	return nil
+}
 
-	// Deliver the prompt. Small prompts are typed straight into the session as
-	// one line (a single round-trip, fastest). Large prompts exceed tmux
-	// send-keys' command-length limit ("command too long") and would be
-	// truncated, so those are written to a file and the harness is told to read
-	// it (an extra read round-trip, but correct for any size). The threshold
-	// keeps the common short-trail PR on the fast inline path.
+// sendPrompt delivers prompt to the harness, inline when small enough or via a
+// file for a large one (the same threshold and mechanism Invoke always used).
+// instruction is appended to the file-path message so the harness knows what
+// to do with the file's contents once it reads them (classify-and-verdict for
+// Invoke, summarize-and-submit for Summarize).
+func (s *SessionProvider) sendPrompt(ctx context.Context, prompt, instruction string) error {
 	flat := flattenPrompt(prompt)
 	if len(flat) <= inlinePromptLimit {
 		if err := s.transport.SendLine(flat); err != nil {
-			return "", fmt.Errorf("provider %s: send prompt: %w", s.name, err)
+			return fmt.Errorf("provider %s: send prompt: %w", s.name, err)
 		}
-	} else {
-		promptPath, werr := s.writePromptFile(prompt)
-		if werr != nil {
-			return "", fmt.Errorf("provider %s: write prompt file: %w", s.name, werr)
-		}
-		defer func() { _ = os.Remove(promptPath) }()
-		instruction := fmt.Sprintf("Read the pull request context and instructions from the file %s, then classify it and return your verdict via the verdict tool.", promptPath)
-		if err := s.transport.SendLine(instruction); err != nil {
-			return "", fmt.Errorf("provider %s: send prompt instruction: %w", s.name, err)
-		}
+		return nil
 	}
-
-	// Wait for the harness to post its verdict through the sink; the tool call
-	// is the completion signal (TDD 6.8). If the harness ends its turn WITHOUT
-	// calling the tool, awaitVerdict re-nudges it rather than blocking until the
-	// overall timeout — the deterministic-harness failsafe.
-	raw, err := s.awaitVerdict(ctx)
-	if err != nil {
-		return "", fmt.Errorf("provider %s: await verdict: %w", s.name, err)
+	promptPath, werr := s.writePromptFile(prompt)
+	if werr != nil {
+		return fmt.Errorf("provider %s: write prompt file: %w", s.name, werr)
 	}
+	defer func() { _ = os.Remove(promptPath) }()
+	msg := fmt.Sprintf("Read the context and instructions from the file %s, then %s.", promptPath, instruction)
+	if err := s.transport.SendLine(msg); err != nil {
+		return fmt.Errorf("provider %s: send prompt instruction: %w", s.name, err)
+	}
+	return nil
+}
 
-	// The verdict tool fires mid-turn; once collected, interrupt to end the
-	// turn deterministically (the model may otherwise keep working after the
-	// tool result), then wait for idle so the next PR's clear is accepted.
+// finishTurn interrupts the harness's turn (the model may otherwise keep
+// working after the tool result) and waits for idle so the next turn's clear
+// is accepted.
+func (s *SessionProvider) finishTurn(ctx context.Context) error {
 	if err := s.transport.Interrupt(); err != nil {
-		return "", fmt.Errorf("provider %s: interrupt after verdict: %w", s.name, err)
+		return fmt.Errorf("provider %s: interrupt after result: %w", s.name, err)
 	}
 	if err := s.waitIdleBounded(ctx); err != nil {
-		return "", fmt.Errorf("provider %s: wait idle after verdict: %w", s.name, err)
+		return fmt.Errorf("provider %s: wait idle after result: %w", s.name, err)
 	}
-	return raw, nil
+	return nil
 }
 
 // awaitVerdict waits for the harness to call the verdict tool. It races the
-// verdict against the harness returning to idle: if the turn ends with no
-// verdict, the model forgot to call the tool, so it nudges the harness to call
-// it now and waits again — up to nudgeCap times — instead of stalling until the
-// overall ctx deadline. This is the provider-side stand-in for a harness
-// stop-hook (kiro-cli's agent schema exposes only userPromptSubmit/agentSpawn
-// hooks, no turn-stop hook, so the recovery is driven here).
-func (s *SessionProvider) awaitVerdict(ctx context.Context) (string, error) {
+// awaitResult waits for the harness to call whichever tool is currently active
+// on the sink (the verdict tool for Invoke, the summary tool for Summarize;
+// TDD 6.10). It races the result against the harness returning to idle: if the
+// turn ends with no result, the model forgot to call the tool. When nudge is
+// non-empty, it re-invites the harness to call it now and waits again — up to
+// nudgeCap times — instead of stalling until the overall ctx deadline (Invoke's
+// behavior, TDD 6.4). When nudge is empty, one missed call is enough to fail
+// immediately after the grace window (Summarize's behavior, TDD 6.9) — a
+// summary is a notification convenience, not an authoritative judgment, so the
+// caller's plain-string fallback is more proportionate than retrying. This is
+// the provider-side stand-in for a harness stop-hook (kiro-cli's agent schema
+// exposes only userPromptSubmit/agentSpawn hooks, no turn-stop hook, so the
+// recovery is driven here).
+func (s *SessionProvider) awaitResult(ctx context.Context, nudge string) (string, error) {
 	for attempt := 0; ; attempt++ {
-		verdictCh := make(chan string, 1)
+		resultCh := make(chan string, 1)
 		errCh := make(chan error, 1)
 		waitCtx, cancel := context.WithCancel(ctx)
 		go func() {
@@ -236,7 +340,7 @@ func (s *SessionProvider) awaitVerdict(ctx context.Context) (string, error) {
 				errCh <- e
 				return
 			}
-			verdictCh <- v
+			resultCh <- v
 		}()
 
 		// Watch for the harness returning to idle (turn ended) in parallel.
@@ -250,36 +354,36 @@ func (s *SessionProvider) awaitVerdict(ctx context.Context) (string, error) {
 		select {
 		case <-ctx.Done():
 			cancel()
-			return "", fmt.Errorf("timed out waiting for verdict")
-		case v := <-verdictCh:
+			return "", fmt.Errorf("timed out waiting for result")
+		case v := <-resultCh:
 			cancel()
 			return v, nil
 		case <-errCh:
 			cancel()
-			return "", fmt.Errorf("timed out waiting for verdict")
+			return "", fmt.Errorf("timed out waiting for result")
 		case <-idleCh:
-			// Turn ended with no verdict yet. The tool call and turn-end can
-			// race (the tool fires just before idle), so give the verdict a
+			// Turn ended with no result yet. The tool call and turn-end can
+			// race (the tool fires just before idle), so give the result a
 			// bounded grace window before concluding the model forgot.
 			grace := s.settle
 			if grace <= 0 {
 				grace = 500 * time.Millisecond
 			}
 			select {
-			case v := <-verdictCh:
+			case v := <-resultCh:
 				cancel()
 				return v, nil
 			case <-time.After(grace):
 			case <-ctx.Done():
 				cancel()
-				return "", fmt.Errorf("timed out waiting for verdict")
+				return "", fmt.Errorf("timed out waiting for result")
 			}
 			cancel()
-			if attempt >= s.nudgeCap {
-				return "", fmt.Errorf("harness ended turn without calling the verdict tool after %d nudges", s.nudgeCap)
+			if nudge == "" || attempt >= s.nudgeCap {
+				return "", fmt.Errorf("harness ended turn without calling the tool")
 			}
 			s.sink.Drain()
-			if err := s.transport.SendLine(s.nudge); err != nil {
+			if err := s.transport.SendLine(nudge); err != nil {
 				return "", fmt.Errorf("send nudge: %w", err)
 			}
 		}

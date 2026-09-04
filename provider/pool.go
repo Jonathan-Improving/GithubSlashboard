@@ -53,6 +53,18 @@ func (p *poolProvider) Invoke(ctx context.Context, req Request, correction strin
 	}
 }
 
+// Summarize checks out a free session, runs the summary prompt on it, and
+// returns it to the pool, mirroring Invoke (TDD 6.9).
+func (p *poolProvider) Summarize(ctx context.Context, prompt string) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case m := <-p.free:
+		defer func() { p.free <- m }()
+		return m.Summarize(ctx, prompt)
+	}
+}
+
 // Close tears down every member, returning the first error.
 func (p *poolProvider) Close() error {
 	var firstErr error

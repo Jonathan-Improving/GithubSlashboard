@@ -112,6 +112,14 @@ state into the trail, which improves the model's *input* but does not make its
 - Accept it: the refresh interval bounds the drift, and the deterministic marks are
   the authoritative half of the row.
 
+This is now also exposed one step further: the notification hook (TDD § 9) puts a
+changed item's `companion` directly in the JSON payload it hands to a human-facing
+integration (SCHEMA § Notification hook `change.companion`). A row is only ever in
+the hook's payload the run its judgment was freshly produced, so the note there is
+always as fresh as this issue's window already bounds elsewhere — the hook does not
+widen the drift window, but it does put the same possibly-stale text in front of the
+operator a second place (a toast) rather than only the status document.
+
 ## E. The unchanged-input fingerprint cannot see a same-count thread swap
 
 **Severity**: Low (requires two independent events to land in the same run with no

@@ -101,4 +101,11 @@ type Provider interface {
 	// correction, when non-empty, is appended to steer a retry with the prior
 	// bad output and the required structure quoted.
 	Invoke(ctx context.Context, req Request, correction string) (string, error)
+
+	// Summarize asks the provider for one short free-text sentence from a plain
+	// prompt — a distinct, simpler contract from Invoke (TDD 6.9): no Request
+	// shape, no vocabulary to validate against, no self-correcting retry loop.
+	// It exists for the notification hook (SCHEMA § Notification hook), never
+	// for per-item classification. The context bounds the call with a timeout.
+	Summarize(ctx context.Context, prompt string) (string, error)
 }

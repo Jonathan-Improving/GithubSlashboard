@@ -12,23 +12,36 @@ import (
 )
 
 // mcpSink is a minimal Model Context Protocol server over the streamable-HTTP
-// transport that exposes exactly one tool, submit_verdict, through which a
-// harness returns its classification for the current PR (TDD 6.8). It is the
-// read half of a SessionProvider: Invoke submits the prompt, the harness calls
-// submit_verdict, and this sink surfaces the tool arguments to Await as the raw
-// JSON verdict for the shared parser.
+// transport that exposes exactly one tool AT A TIME — either submit_verdict
+// (classification, TDD 6.8) or submit_summary (TDD 6.9) — through which a
+// harness returns its result for the request currently in flight. It is the
+// read half of a SessionProvider: Invoke/Summarize submits the prompt after
+// selecting which tool this turn offers, the harness calls that tool, and this
+// sink surfaces the tool arguments to Await as the raw result for the caller.
 //
-// Only one classification is in flight at a time (a session serializes
-// requests), so a single-slot channel carries the pending verdict. The server
-// binds to loopback and requires no auth: it is reachable only from the local
-// harness the tool spawns, and it never touches GitHub, so it does not widen
-// the read-only surface (POLICY: GitHub read-only; the verdict tool is an
-// inbound sink, not a mutating call).
+// The two tools are mutually exclusive per turn (TDD 6.10): tools/list reports
+// only the currently active one, so the harness is never offered a choice
+// between them and left to guess which one this turn wants. Only one
+// classification-or-summary is in flight at a time (a session serializes
+// requests via the caller's own mutex), so a single mutable activeTool field
+// is safe without its own locking. The server binds to loopback and requires
+// no auth: it is reachable only from the local harness the tool spawns, and it
+// never touches GitHub, so it does not widen the read-only surface (POLICY:
+// GitHub read-only; the verdict/summary tools are an inbound sink, not a
+// mutating call).
 type mcpSink struct {
 	server   *http.Server
 	listener net.Listener
 	url      string
-	toolName string
+
+	verdictTool string
+	summaryTool string
+	// activeTool is which of verdictTool/summaryTool is currently offered.
+	// Set by the caller (via SetActiveTool) before each turn starts; read by
+	// tools/list and handleToolCall. Not mutex-guarded: the caller's own
+	// serialization (one turn in flight per session) is what makes this safe,
+	// exactly as with the rest of the session provider's per-turn state.
+	activeTool string
 
 	mu        sync.Mutex
 	sessionID string
@@ -43,19 +56,23 @@ type mcpSink struct {
 // tunable, so it is a named constant here rather than config.
 const mcpProtocolVersion = "2025-06-18"
 
-// newMCPSink starts a loopback MCP server exposing the named verdict tool and
-// returns a sink bound to it. The caller Closes it to stop the listener.
-func newMCPSink(toolName string) (*mcpSink, error) {
+// newMCPSink starts a loopback MCP server exposing the verdict and summary
+// tools (mutually exclusive per turn, TDD 6.10) and returns a sink bound to it.
+// The caller Closes it to stop the listener. The active tool defaults to
+// verdictTool, since classification is the first thing any session does.
+func newMCPSink(verdictTool, summaryTool string) (*mcpSink, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("mcp sink: listen: %w", err)
 	}
 	s := &mcpSink{
-		listener: ln,
-		url:      fmt.Sprintf("http://%s/mcp", ln.Addr().String()),
-		toolName: toolName,
-		verdicts: make(chan string, 1),
-		ready:    make(chan struct{}),
+		listener:    ln,
+		url:         fmt.Sprintf("http://%s/mcp", ln.Addr().String()),
+		verdictTool: verdictTool,
+		summaryTool: summaryTool,
+		activeTool:  verdictTool,
+		verdicts:    make(chan string, 1),
+		ready:       make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handleMCP)
@@ -66,6 +83,11 @@ func newMCPSink(toolName string) (*mcpSink, error) {
 	go func() { _ = s.server.Serve(ln) }()
 	return s, nil
 }
+
+// SetActiveTool switches which tool tools/list advertises and handleToolCall
+// accepts, ahead of the next turn (TDD 6.10). The caller sets this before
+// submitting the prompt for that turn.
+func (s *mcpSink) SetActiveTool(name string) { s.activeTool = name }
 
 // Endpoint reports the MCP URL the harness posts verdicts to.
 func (s *mcpSink) Endpoint() string { return s.url }
@@ -153,7 +175,7 @@ func (s *mcpSink) handleMCP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, r, req.ID, map[string]any{})
 	case "tools/list":
 		s.readyOne.Do(func() { close(s.ready) })
-		s.writeResult(w, r, req.ID, map[string]any{"tools": []any{s.toolSpec()}})
+		s.writeResult(w, r, req.ID, map[string]any{"tools": []any{s.activeToolSpec()}})
 	case "tools/call":
 		s.handleToolCall(w, r, req)
 	default:
@@ -161,7 +183,17 @@ func (s *mcpSink) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// toolSpec is the tools/list entry for the single verdict tool. Its input
+// activeToolSpec returns the tools/list entry for whichever tool is currently
+// active (TDD 6.10) — the harness is offered exactly one spec per turn, never
+// both, so it cannot guess wrong about which one this turn wants.
+func (s *mcpSink) activeToolSpec() map[string]any {
+	if s.activeTool == s.summaryTool {
+		return s.summaryToolSpec()
+	}
+	return s.verdictToolSpec()
+}
+
+// verdictToolSpec is the tools/list entry for the verdict tool. Its input
 // schema mirrors the response contract (SCHEMA § Response) so the harness is
 // told the exact fields to supply.
 //
@@ -171,10 +203,10 @@ func (s *mcpSink) handleMCP(w http.ResponseWriter, r *http.Request) {
 // in the prompt file's constraints. Membership is enforced by the same validator
 // the one-shot path uses (TDD 6.6), so a wrong value drives the self-correcting
 // retry rather than being silently accepted here.
-func (s *mcpSink) toolSpec() map[string]any {
+func (s *mcpSink) verdictToolSpec() map[string]any {
 	return map[string]any{
-		"name":        s.toolName,
-		"description": "Submit the final classification verdict for the item currently under review. Call this exactly once with the classification fields.",
+		"name":        s.verdictTool,
+		"description": "Submit the final classification verdict for the item currently under review, per this turn's instructions. Call this exactly once with the classification fields.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -186,6 +218,24 @@ func (s *mcpSink) toolSpec() map[string]any {
 				"emoji":        map[string]any{"type": "string", "description": "exactly one emoji character that visually summarizes the note"},
 			},
 			"required": []string{"bucket", "priority", "companion", "emoji"},
+		},
+	}
+}
+
+// summaryToolSpec is the tools/list entry for the summary tool (TDD 6.9,
+// SCHEMA § Summarize contract). Its schema is deliberately minimal — one short
+// sentence, no vocabulary to validate against — matching the lower stakes of a
+// notification convenience versus an authoritative classification.
+func (s *mcpSink) summaryToolSpec() map[string]any {
+	return map[string]any{
+		"name":        s.summaryTool,
+		"description": "Submit your one-sentence summary for the notification described in this turn's instructions. Call this exactly once.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"summary": map[string]any{"type": "string", "description": "one short sentence summarizing the changes described in the prompt"},
+			},
+			"required": []string{"summary"},
 		},
 	}
 }
@@ -202,7 +252,7 @@ func (s *mcpSink) handleToolCall(w http.ResponseWriter, r *http.Request, req jso
 		s.writeError(w, r, req.ID, -32602, "invalid params")
 		return
 	}
-	if params.Name != s.toolName {
+	if params.Name != s.activeTool {
 		s.writeError(w, r, req.ID, -32601, "unknown tool: "+params.Name)
 		return
 	}

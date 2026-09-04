@@ -42,6 +42,7 @@ type Options struct {
 	ReadyTimeout time.Duration // max wait for the harness to become interactive
 	Settle       time.Duration // quiet window confirming the harness is idle
 	VerdictTool  string        // MCP tool name the harness calls to return a verdict
+	SummaryTool  string        // MCP tool name the harness calls to return a summary (TDD 6.9)
 	IdleMarker   string        // pane substring shown when the harness is idle
 	BusyMarker   string        // pane substring shown when the harness is mid-turn
 
@@ -75,8 +76,14 @@ func NewFromOptions(o Options) (Provider, error) {
 }
 
 // verdictToolDefault is the MVP name of the tool the harness calls to return
-// its verdict. A closed protocol identifier, so a named constant.
-const verdictToolDefault = "submit_verdict"
+// its classification verdict. summaryToolDefault is the MVP name of the tool
+// it calls to return a notification summary sentence (TDD 6.9). Both are
+// closed protocol identifiers, so named constants; the two are mutually
+// exclusive per turn (TDD 6.10), never both offered at once.
+const (
+	verdictToolDefault = "submit_verdict"
+	summaryToolDefault = "submit_summary"
+)
 
 // newHarnessSession assembles a session provider: it starts the MCP sink, then
 // provisions a harness profile that points at the sink and instructs the model
@@ -87,7 +94,11 @@ func newHarnessSession(o Options) (Provider, error) {
 	if toolName == "" {
 		toolName = verdictToolDefault
 	}
-	sink, err := newMCPSink(toolName)
+	summaryToolName := o.SummaryTool
+	if summaryToolName == "" {
+		summaryToolName = summaryToolDefault
+	}
+	sink, err := newMCPSink(toolName, summaryToolName)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +111,13 @@ func newHarnessSession(o Options) (Provider, error) {
 	var cleanup func()
 	if len(argv) == 0 {
 		// MVP harness: Kiro CLI, launched interactively (not --no-interactive)
-		// under a provisioned named profile that enables only the verdict tool.
-		// kiro-cli resolves --agent by NAME from a .kiro/agents directory in the
-		// working dir (or globally), not by file path, so the profile is written
-		// as <name>.json into a temp workspace the session runs in.
+		// under a provisioned named profile that enables only the verdict and
+		// summary tools. kiro-cli resolves --agent by NAME from a .kiro/agents
+		// directory in the working dir (or globally), not by file path, so the
+		// profile is written as <name>.json into a temp workspace the session
+		// runs in.
 		agentName := "githubslashboard-session"
-		dir, perr := provisionKiroProfile(sink.Endpoint(), toolName, agentName)
+		dir, perr := provisionKiroProfile(sink.Endpoint(), toolName, summaryToolName, agentName)
 		if perr != nil {
 			_ = sink.Close()
 			return nil, perr
@@ -149,7 +161,7 @@ func newHarnessSession(o Options) (Provider, error) {
 		transport.settle = o.Settle
 	}
 
-	sp := newSessionProvider(o.Name, transport, sink, clearCmd, o.Settle, ready)
+	sp := newSessionProvider(o.Name, transport, sink, clearCmd, o.Settle, ready, toolName, summaryToolName)
 	// Prompt files are handed to the harness through a directory its read tool
 	// is scoped to. When we provisioned the workspace, that is <workspace>/prompts;
 	// otherwise fall back to the OS temp dir.
@@ -181,15 +193,18 @@ func kiroSessionArgv(agentName string) []string {
 	}
 }
 
-// provisionKiroProfile writes a Kiro agent profile named agentName that enables
-// only the verdict MCP tool, points it at the sink URL over streamable HTTP,
-// and instructs the model to classify a priori and return its verdict by
-// calling the tool. The profile is deliberately narrow (POLICY ratifies exactly
-// this one tool): a bare classification context plus the single sink tool. It
-// is written as <workspace>/.kiro/agents/<agentName>.json and the workspace dir
-// is returned so the session can run with it as the working directory (kiro-cli
+// provisionKiroProfile writes a Kiro agent profile named agentName that trusts
+// both the verdict and summary MCP tools (TDD 6.10), points it at the sink URL
+// over streamable HTTP, and instructs the model to act only on whichever tool
+// the current turn actually offers. The profile is deliberately narrow (POLICY
+// ratifies exactly these two tools): a bare context plus the sink's two tools.
+// Trusting both here is a one-time, static pre-approval — the sink itself
+// advertises only one per turn (mcpSink.SetActiveTool), so the harness is never
+// actually offered a choice even though the profile trusts both names. It is
+// written as <workspace>/.kiro/agents/<agentName>.json and the workspace dir is
+// returned so the session can run with it as the working directory (kiro-cli
 // resolves --agent by name from that location).
-func provisionKiroProfile(sinkURL, toolName, agentName string) (string, error) {
+func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName string) (string, error) {
 	workspace, err := os.MkdirTemp("", "gsb-kiro-session-")
 	if err != nil {
 		return "", fmt.Errorf("temp workspace: %w", err)
@@ -203,46 +218,58 @@ func provisionKiroProfile(sinkURL, toolName, agentName string) (string, error) {
 	profile := map[string]any{
 		"$schema":     "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
 		"name":        agentName,
-		"description": "Bare a-priori PR classifier that reads its input from a file and returns its verdict through the verdict MCP tool.",
+		"description": "Bare a-priori PR/issue classifier and notification summarizer that reads its input from a file and returns its result through whichever result MCP tool the current turn offers.",
 		"model":       "glm-5",
 		// Do not merge the global legacy mcp.json: this session must have a bare
-		// context with only the verdict tool, no unrelated MCP servers, so the
+		// context with only the result tools, no unrelated MCP servers, so the
 		// harness starts fast and stays focused. This is the in-profile control
 		// that the lean agent alone could not achieve.
 		"useLegacyMcpJson": false,
 		"mcpServers": map[string]any{
-			"verdict": map[string]any{
+			"result": map[string]any{
 				"url":      sinkURL,
 				"disabled": false,
 			},
 		},
-		// Two deliberately-introduced, tightly-scoped capabilities (POLICY):
-		//   - the verdict MCP tool (how the classification is returned), and
+		// Three deliberately-introduced, tightly-scoped capabilities (POLICY):
+		//   - the verdict tool (classification result) and the summary tool
+		//     (notification result) — both trusted here as a static
+		//     pre-approval, but the sink advertises only one per turn
+		//     (TDD 6.10), so the harness is never actually offered a choice
+		//     between them despite both being nominally trusted; and
 		//   - fs_read, scoped to the prompts directory only, so the harness can
-		//     read the per-PR input file (the event trail is too large to type
-		//     into the session without hitting the terminal command-length
-		//     limit). No write, shell, or network tools reach this session.
-		// Listing them in allowedTools pre-approves them so no interactive trust
-		// prompt appears at startup.
-		"tools":        []string{"@verdict/" + toolName, "fs_read"},
-		"allowedTools": []string{"@verdict/" + toolName, "fs_read"},
+		//     read the per-request input file (an event trail or a summary
+		//     prompt is too large to type into the session without hitting the
+		//     terminal command-length limit). No write, shell, or network tools
+		//     reach this session.
+		// Listing them in allowedTools pre-approves them so no interactive
+		// trust prompt appears at startup or when the active tool switches.
+		"tools":        []string{"@result/" + verdictTool, "@result/" + summaryTool, "fs_read"},
+		"allowedTools": []string{"@result/" + verdictTool, "@result/" + summaryTool, "fs_read"},
 		"toolsSettings": map[string]any{
 			"fs_read": map[string]any{
 				"allowedPaths": []string{promptsDir},
 			},
 		},
-		"prompt": "You are a classification function for a read-only GitHub dashboard. " +
-			"Each request gives you a file path. Read that file: it contains one item's " +
-			"identifying context and chronological event trail as JSON, plus response instructions. " +
-			"The item is either a pull request or an issue — its \"entity\" field says which, and its " +
-			"\"constraints\" field lists the exact vocabulary that item's verdict may use. " +
-			"Classify the item's true status a priori from that trail alone, honoring the immutable floors " +
-			"(merged stays merged, closed stays closed) and letting later authoritative events supersede " +
-			"earlier uncleared flags. Return your verdict by calling the " + toolName + " tool exactly once " +
-			"with fields bucket, action (only if bucket is open), close_reason (only if bucket is closed), " +
-			"priority, companion, and emoji (exactly one emoji character summarizing the note). " +
-			"Every enum value must come from the matching list in the request's constraints. " +
-			"Do not print the verdict as text; only call the tool.",
+		"prompt": "You perform two kinds of turn for a read-only GitHub dashboard: classifying one pull " +
+			"request or issue's true status, or writing a one-sentence notification summary. Each request " +
+			"gives you a file path or inline text with its own instructions — follow those instructions for " +
+			"what this specific turn wants. " +
+			"For a classification turn: the file contains one item's identifying context and chronological " +
+			"event trail as JSON. The item is either a pull request or an issue — its \"entity\" field says " +
+			"which, and its \"constraints\" field lists the exact vocabulary the verdict may use. Classify the " +
+			"item's true status a priori from that trail alone, honoring the immutable floors (merged stays " +
+			"merged, closed stays closed) and letting later authoritative events supersede earlier uncleared " +
+			"flags. Return your verdict by calling the " + verdictTool + " tool exactly once with fields " +
+			"bucket, action (only if bucket is open), close_reason (only if bucket is closed), priority, " +
+			"companion, and emoji (exactly one emoji character summarizing the note). Every enum value must " +
+			"come from the matching list in the request's constraints. " +
+			"For a summary turn: you are given a short description of what changed. Write exactly one short " +
+			"sentence summarizing it, sized for a desktop notification, and return it by calling the " +
+			summaryTool + " tool exactly once with field summary. " +
+			"Only one of these two tools is ever offered to you in a given turn — call whichever one the " +
+			"turn's own instructions ask for; do not guess or call a tool that was not asked for. Do not " +
+			"print your result as text; only call the tool.",
 	}
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {

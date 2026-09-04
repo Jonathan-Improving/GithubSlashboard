@@ -37,9 +37,10 @@ func (f *fakeTransport) Close() error                       { f.closed = true; r
 
 // fakeSink returns a scripted verdict, or blocks until ctx is done when none.
 type fakeSink struct {
-	verdict string
-	block   bool
-	closed  bool
+	verdict    string
+	block      bool
+	closed     bool
+	activeTool string
 }
 
 func (f *fakeSink) Await(ctx context.Context) (string, error) {
@@ -53,11 +54,12 @@ func (f *fakeSink) WaitReady(ctx context.Context) error { return nil }
 func (f *fakeSink) Drain()                              {}
 func (f *fakeSink) Close() error                        { f.closed = true; return nil }
 func (f *fakeSink) Endpoint() string                    { return "http://127.0.0.1:0/mcp" }
+func (f *fakeSink) SetActiveTool(name string)           { f.activeTool = name }
 
 func TestSessionInvokeClearsThenPromptsThenReturnsVerdict(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	raw, err := p.Invoke(context.Background(), req(), "")
 	if err != nil {
@@ -77,7 +79,7 @@ func TestSessionInvokeClearsThenPromptsThenReturnsVerdict(t *testing.T) {
 		t.Errorf("first line = %q, want the clear command", tr.lines[0])
 	}
 	// A small prompt is sent inline (one round-trip), not via a file.
-	if strings.Contains(tr.lines[1], "Read the pull request context") {
+	if strings.Contains(tr.lines[1], "Read the context and instructions") {
 		t.Errorf("small prompt should be inline, not a file handoff: %q", tr.lines[1])
 	}
 	if tr.resets != 1 {
@@ -88,7 +90,7 @@ func TestSessionInvokeClearsThenPromptsThenReturnsVerdict(t *testing.T) {
 func TestSessionInvokeLargePromptUsesFileHandoff(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	// A large event trail pushes the prompt past the inline limit -> file handoff.
 	var events []model.Event
@@ -104,7 +106,7 @@ func TestSessionInvokeLargePromptUsesFileHandoff(t *testing.T) {
 		t.Fatalf("Invoke: %v", err)
 	}
 	instr := tr.lines[len(tr.lines)-1]
-	if !strings.Contains(instr, "Read the pull request context") {
+	if !strings.Contains(instr, "Read the context and instructions") {
 		t.Fatalf("large prompt should use file handoff, got %q", instr)
 	}
 	var promptPath string
@@ -126,7 +128,7 @@ func TestSessionInvokeLargePromptUsesFileHandoff(t *testing.T) {
 func TestSessionInvokeStartsOnce(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	for i := 0; i < 3; i++ {
 		if _, err := p.Invoke(context.Background(), req(), ""); err != nil {
@@ -144,7 +146,7 @@ func TestSessionInvokeStartsOnce(t *testing.T) {
 func TestSessionReusesOneHarnessAcrossPRs(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	const n = 5
 	for i := 0; i < n; i++ {
@@ -163,7 +165,7 @@ func TestSessionReusesOneHarnessAcrossPRs(t *testing.T) {
 func TestSessionInvokeTimesOut(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{block: true}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -175,7 +177,7 @@ func TestSessionInvokeTimesOut(t *testing.T) {
 func TestSessionStartErrorPropagates(t *testing.T) {
 	tr := &fakeTransport{startErr: errors.New("no tmux")}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 
 	if _, err := p.Invoke(context.Background(), req(), ""); err == nil {
 		t.Error("start error should propagate")
@@ -185,7 +187,7 @@ func TestSessionStartErrorPropagates(t *testing.T) {
 func TestSessionCloseClosesBoth(t *testing.T) {
 	tr := &fakeTransport{}
 	sink := &fakeSink{verdict: goodJSON}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -237,6 +239,7 @@ func (n *nudgeSink) Drain()                              {}
 func (n *nudgeSink) WaitReady(ctx context.Context) error { return nil }
 func (n *nudgeSink) Close() error                        { return nil }
 func (n *nudgeSink) Endpoint() string                    { return "" }
+func (n *nudgeSink) SetActiveTool(name string)           {}
 
 // idleThenBusyTransport reports idle once (triggering a nudge) and records the
 // nudge by flipping a flag when a line is sent after the prompt.
@@ -263,7 +266,7 @@ func TestSessionNudgesWhenVerdictMissing(t *testing.T) {
 	nudged := false
 	tr := &nudgeTransport{nudged: &nudged}
 	sink := &nudgeSink{verdict: goodJSON, nudged: &nudged}
-	p := newSessionProvider("kiro", tr, sink, "/clear", 10*time.Millisecond, 0)
+	p := newSessionProvider("kiro", tr, sink, "/clear", 10*time.Millisecond, 0, "submit_verdict", "submit_summary")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -276,5 +279,72 @@ func TestSessionNudgesWhenVerdictMissing(t *testing.T) {
 	}
 	if !nudged {
 		t.Error("provider should have nudged the harness when the turn ended without a verdict")
+	}
+}
+
+// TestSessionSummarizeSwitchesActiveToolAndReturnsResult covers TDD 6.9/6.10:
+// Summarize toggles the sink to the summary tool before sending its prompt,
+// and returns whatever the sink surfaces, distinct from a classification call.
+func TestSessionSummarizeSwitchesActiveToolAndReturnsResult(t *testing.T) {
+	tr := &fakeTransport{}
+	sink := &fakeSink{verdict: `{"summary":"3 PRs changed"}`}
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
+
+	raw, err := p.Summarize(context.Background(), "3 PRs changed: #1, #2, #3")
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if raw != `{"summary":"3 PRs changed"}` {
+		t.Errorf("raw = %q, want the sink's surfaced result", raw)
+	}
+	if sink.activeTool != "submit_summary" {
+		t.Errorf("active tool = %q, want submit_summary (TDD 6.10)", sink.activeTool)
+	}
+	// The clear + prompt ceremony still applies (Summarize shares Invoke's
+	// session lifecycle), just with a summary-shaped completion instruction.
+	if len(tr.lines) != 2 {
+		t.Fatalf("sent %d lines, want 2 (clear, prompt)", len(tr.lines))
+	}
+}
+
+// TestSessionInvokeSetsVerdictToolActive covers the other half of TDD 6.10:
+// a classification call must set the sink back to the verdict tool, so a
+// session that has previously summarized does not leave the summary tool
+// active for the next classification.
+func TestSessionInvokeSetsVerdictToolActive(t *testing.T) {
+	tr := &fakeTransport{}
+	sink := &fakeSink{verdict: goodJSON}
+	p := newSessionProvider("kiro", tr, sink, "/clear", 0, 0, "submit_verdict", "submit_summary")
+
+	if _, err := p.Invoke(context.Background(), req(), ""); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if sink.activeTool != "submit_verdict" {
+		t.Errorf("active tool = %q, want submit_verdict", sink.activeTool)
+	}
+}
+
+// TestSessionSummarizeDoesNotNudge covers TDD 6.9: unlike Invoke, a missed
+// tool call on a summary turn fails after one grace window rather than
+// nudging the harness — proportionate to a notification's lower stakes. This
+// uses a sink that never returns (blocks until ctx is done) and a transport
+// that reports idle immediately, so the only way the call could succeed is via
+// a nudge; checking the exact line count sent (clear + prompt, nothing more)
+// is what actually distinguishes "no nudge" from nudgeTransport's own
+// prompt-vs-nudge line-counting heuristic, which nudgeSink's flag-based
+// unblocking conflates with the prompt line itself once a nudge is sent.
+func TestSessionSummarizeDoesNotNudge(t *testing.T) {
+	tr := &fakeTransport{}
+	sink := &fakeSink{block: true}
+	p := newSessionProvider("kiro", tr, sink, "/clear", 10*time.Millisecond, 0, "submit_verdict", "submit_summary")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := p.Summarize(ctx, "prompt"); err == nil {
+		t.Error("Summarize should fail rather than nudge when the harness never calls the summary tool")
+	}
+	// Exactly clear + prompt were sent; a nudge would be a third line.
+	if len(tr.lines) != 2 {
+		t.Errorf("sent %d lines, want exactly 2 (clear, prompt) — Summarize must not nudge (TDD 6.9)", len(tr.lines))
 	}
 }

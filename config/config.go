@@ -112,6 +112,12 @@ const (
 	// so fan-out applies to one-shot providers; see ClassifyWorkers use.
 	DefaultClassifyWorkers = 4
 
+	// DefaultNotifyTimeout bounds the notification hook subprocess (TDD 9.4,
+	// 9.5). Short by design: the hook is a fire-and-forget desktop notification
+	// trigger, not a task the run should wait long on, and a slow/hung hook
+	// must not meaningfully delay the next scheduled run.
+	DefaultNotifyTimeout = 10 * time.Second
+
 	// StoreFileName / OutputFileName are the artifact filenames. They are fixed,
 	// not configurable: the *location* is the operator's choice (see
 	// DefaultStorePath / DefaultOutputPath and the path overrides), while the
@@ -149,6 +155,8 @@ const (
 	EnvIssueStaleAgeThreshold = "GSB_ISSUE_STALE_AGE_THRESHOLD"
 	EnvClassifyFloorNotes     = "GSB_CLASSIFY_FLOOR_NOTES"
 	EnvIncludeTerminal        = "GSB_INCLUDE_TERMINAL"
+	EnvNotifyHook             = "GSB_NOTIFY_HOOK"
+	EnvNotifyTimeout          = "GSB_NOTIFY_TIMEOUT"
 )
 
 // Config is the validated runtime configuration for one invocation.
@@ -198,6 +206,17 @@ type Config struct {
 
 	StorePath  string
 	OutputPath string
+
+	// NotifyHook, when non-empty, is a shell command the tool writes a JSON
+	// change payload to on stdin after a run in which at least one open PR or
+	// issue required a fresh provider judgment (TDD 9.1, 9.4). Empty (the
+	// default) leaves the notification mechanism entirely inert — no process is
+	// spawned, no summary is requested (TDD 9.4).
+	NotifyHook string
+	// NotifyTimeout bounds how long the hook command is given to exit (TDD 9.4,
+	// 9.5). Exceeding it, a non-zero exit, or a failure to start are all
+	// logged and non-fatal to the run.
+	NotifyTimeout time.Duration
 }
 
 // Default returns a Config populated with the default constants. The GitHub
@@ -218,6 +237,7 @@ func Default() Config {
 		SkipFloorNotes:         DefaultClassifySkipFloorNotes,
 		StorePath:              DefaultStorePath(),
 		OutputPath:             DefaultOutputPath(),
+		NotifyTimeout:          DefaultNotifyTimeout,
 	}
 }
 
@@ -278,6 +298,16 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		c.IncludeTerminal = b
 	}
+	if v := getenv(EnvNotifyHook); v != "" {
+		c.NotifyHook = v
+	}
+	if v := getenv(EnvNotifyTimeout); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvNotifyTimeout, v, err)
+		}
+		c.NotifyTimeout = d
+	}
 
 	if err := c.Validate(); err != nil {
 		return Config{}, err
@@ -334,6 +364,9 @@ func (c Config) Validate() error {
 	}
 	if c.OutputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	if c.NotifyHook != "" && c.NotifyTimeout <= 0 {
+		return fmt.Errorf("notify timeout must be positive when a notify hook is configured, got %s", c.NotifyTimeout)
 	}
 	return nil
 }

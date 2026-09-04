@@ -30,6 +30,12 @@ func (f *fakeProvider) Invoke(ctx context.Context, req Request, correction strin
 	return out, err
 }
 
+// Summarize is not exercised by Judge tests, but is required to satisfy
+// Provider; it mirrors Invoke's scripted-output behavior for completeness.
+func (f *fakeProvider) Summarize(ctx context.Context, prompt string) (string, error) {
+	return f.Invoke(ctx, Request{}, "")
+}
+
 const goodJSON = `{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting on a reviewer","emoji":"⏳"}`
 
 func req() Request {

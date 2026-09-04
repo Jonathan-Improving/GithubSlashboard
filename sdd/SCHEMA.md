@@ -408,3 +408,118 @@ call.
   }
 }
 ```
+
+---
+
+## Notification hook
+
+After classification, the tool identifies which open PRs and issues actually
+required a provider judgment this run (TDD 4.13/8.8 — a fresh judgment happens
+for a first-seen item, one whose deterministic inputs changed, or one whose
+prior record was unverified; an item carried forward unchanged is deliberately
+excluded). When that set is non-empty, the tool asks the provider for one short
+summary sentence via a distinct, simpler contract (`Summarize`, TDD 6.9 — not
+the classification `Request`/`Response` shape above), then writes a single JSON
+object to the stdin of the configured hook command (`GSB_NOTIFY_HOOK`) and waits
+up to `GSB_NOTIFY_TIMEOUT` for it to exit.
+
+The hook exists to prompt the operator to look at the status document, not to
+replace it — the payload carries only what changed and one human-readable line,
+not a full diff or the item's history.
+
+**Scope**: only open PRs and open issues can appear in `changed`. A merged,
+closed, or stale item is a settled fact the operator is not expected to act on
+further, so it never triggers the hook even though its floor-note call also
+touches the provider — that call is not a judgment about whether anything
+*changed* (TDD 4.13's fingerprint concept has no floor/stale equivalent), and a
+settled item newly relaying its own settledness on every run is not news
+(TDD 9.2).
+
+**Firing condition**: the hook is invoked only when `changed` is non-empty. A
+run where every item was carried forward unchanged produces no notification —
+silence is the expected common case at a 20-minute cadence, not an error
+(TDD 9.1).
+
+**Failure handling**: the hook is best-effort. A non-zero exit, a timeout, or a
+failure to start is logged and does not fail the run — the status document has
+already been written by this point, and a broken notification integration must
+never be the thing that breaks the dashboard (TDD 9.5).
+
+### Payload (to the hook's stdin)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `summary` | `string` | yes | One short, model-generated sentence summarizing everything in `changed`, sized for a desktop notification toast rather than the document — a distinct provider call from per-item classification, since no single item's companion note is written with "synthesize across N items" in mind. |
+| `changed` | `change[]` | yes | Every open PR/issue that required a fresh judgment this run, in the order classification produced them. Never empty — the hook is not invoked otherwise. |
+
+### `change`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `entity` | `"pull_request" \| "issue"` | yes | Matches the provider request's own `entity` (SCHEMA § Request), so a consumer can key off the same value used elsewhere. |
+| `repo` | `string` | yes | `owner/name`. |
+| `number` | `int` | yes | PR or issue number. |
+| `url` | `string` | yes | Canonical GitHub URL, so a hook can build a clickable notification. |
+| `role` | `string` | yes | Operator's relationship to the item (entity-specific vocabulary, SCHEMA § Request `role`). |
+| `bucket` | `string` | yes | The item's freshly judged bucket. |
+| `action` | `string` | no | Present iff `bucket: open`. |
+| `companion` | `string` | no | The freshly inferred note. Absent if this run's judgment came back unverified — an unverified item still counts as "changed" (its inputs moved, prompting the judgment attempt) even though the judgment itself did not produce a usable note. |
+| `priority` | `string` | yes | The item's freshly judged priority. |
+
+Only the item's **new** state is carried; there is no `previous_*` field. The
+hook's purpose is to say *this needs a look*, not to reconstruct history — the
+status document remains the record of what changed and why.
+
+**Example payload:**
+
+```json
+{
+  "summary": "3 PRs need review, valkey-glide-ruby#295 flagged elevated",
+  "changed": [
+    {
+      "entity": "pull_request",
+      "repo": "valkey-io/valkey-glide-ruby",
+      "number": 295,
+      "url": "https://github.com/valkey-io/valkey-glide-ruby/pull/295",
+      "role": "submitter",
+      "bucket": "open",
+      "action": "review_feedback",
+      "companion": "reviewer left unresolved comments",
+      "priority": "elevated"
+    },
+    {
+      "entity": "issue",
+      "repo": "valkey-io/valkey-glide-ruby",
+      "number": 234,
+      "url": "https://github.com/valkey-io/valkey-glide-ruby/issues/234",
+      "role": "participant",
+      "bucket": "open",
+      "action": "awaiting_others",
+      "companion": "maintainer asked a follow-up question",
+      "priority": "neutral"
+    }
+  ]
+}
+```
+
+### Summarize contract (provider)
+
+Distinct from classification's `Request`/`Response` (TDD 6.9): a plain prompt
+string in, a plain string out, no vocabulary to validate against, no
+self-correcting retry loop. A failed attempt falls back to a plain non-model
+string rather than retrying — a wrong or missing toast sentence is a
+notification inconvenience, not a misjudged PR status.
+
+For the session provider, the harness's classification and summarization tools
+are mutually exclusive **per turn** (TDD 6.10): the sink advertises exactly one
+of `submit_verdict` or `submit_summary` in `tools/list` depending on which kind
+of request is in flight, so the model is never offered two callable tools at
+once and left to guess which one this turn wants. The agent profile trusts both
+tool names from session construction (a static pre-approval list), so toggling
+which one is advertised never triggers an interactive trust prompt mid-session.
+
+**`submit_summary` tool schema:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `summary` | `string` | yes | One short sentence, the same value that lands in the payload's top-level `summary` field. |
