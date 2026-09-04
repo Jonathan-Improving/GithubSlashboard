@@ -123,9 +123,37 @@ func TestClosedIssueOnlyUnderClosed(t *testing.T) {
 	}
 }
 
-// TestStaleIssueInItsOwnSection covers TDD 8.6: a stale issue is archived under
-// the Stale section, split by role, and does not appear in an active section.
+// TestClosedIssuesSortNewestFirst covers TDD 3.6 for issues: the Closed
+// section orders by ClosedAt, most recent first, within each role's table.
+func TestClosedIssuesSortNewestFirst(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	issues := []model.Issue{
+		// Number order (1 < 2) is the deliberate inverse of date order.
+		{Repo: "a/x", Number: 1, Title: "Old closed", URL: "ui1", Role: model.IssueRoleAuthor,
+			Created: created, ClosedAt: &older, Bucket: model.IssueBucketClosed,
+			CloseReason: model.IssueCloseReasonCompleted, Priority: model.PriorityNeutral},
+		{Repo: "a/x", Number: 2, Title: "New closed", URL: "ui2", Role: model.IssueRoleAuthor,
+			Created: created, ClosedAt: &newer, Bucket: model.IssueBucketClosed,
+			CloseReason: model.IssueCloseReasonCompleted, Priority: model.PriorityNeutral},
+	}
+	md := Render(nil, issues, "x", issueNow)
+
+	iNew := strings.Index(md, "New closed")
+	iOld := strings.Index(md, "Old closed")
+	if iNew == -1 || iOld == -1 {
+		t.Fatalf("expected both closed issue rows present:\n%s", md)
+	}
+	if iOld < iNew {
+		t.Errorf("newer closed issue should precede older one:\n%s", md)
+	}
+}
+
 func TestStaleIssueInItsOwnSection(t *testing.T) {
+	// TDD 8.6: a stale issue is archived under the Stale section, split by
+	// role, and does not appear in an active section.
 	md := Render(nil, sampleIssues(), "x", issueNow)
 
 	staleIdx := strings.Index(md, "## ☠ Stale")

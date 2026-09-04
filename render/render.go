@@ -165,8 +165,8 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 
 	open := selectBucket(prs, model.BucketOpen)
 	stale := selectBucket(prs, model.BucketStale)
-	merged := selectBucket(prs, model.BucketMerged)
-	closed := selectBucket(prs, model.BucketClosed)
+	merged := selectTerminalBucket(prs, model.BucketMerged)
+	closed := selectTerminalBucket(prs, model.BucketClosed)
 
 	// 💡 Open — Repo | PR | Title | Created | Age | Updated | Action Needed
 	b.WriteString(fmt.Sprintf("## %s Open (%d)\n\n", secOpen, len(open)))
@@ -247,7 +247,7 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
 	}
 	sortRows(awaitingUs)
 	sortRows(reviewSubmitted)
-	sortRows(done)
+	sortTerminalRows(done)
 
 	// Awaiting Our Action — Repo | PR | Title | Updated | Our Review
 	b.WriteString(fmt.Sprintf("## Awaiting Our Action (%d)\n\n", len(awaitingUs)))
@@ -466,6 +466,19 @@ func selectBucket(prs []model.PR, bucket model.Bucket) []model.PR {
 	return out
 }
 
+// selectTerminalBucket is selectBucket for a terminal bucket (Merged, Closed):
+// rows are ordered by terminal date rather than repo/number (TDD 3.6).
+func selectTerminalBucket(prs []model.PR, bucket model.Bucket) []model.PR {
+	var out []model.PR
+	for _, p := range prs {
+		if p.Bucket == bucket {
+			out = append(out, p)
+		}
+	}
+	sortTerminalRows(out)
+	return out
+}
+
 func filterRole(prs []model.PR, role model.Role) []model.PR {
 	var out []model.PR
 	for _, p := range prs {
@@ -477,13 +490,55 @@ func filterRole(prs []model.PR, role model.Role) []model.PR {
 }
 
 // sortRows orders rows deterministically (elevated first, then repo, then
-// number) so rendering is a pure function of the store (TDD 3.3).
+// number) so rendering is a pure function of the store (TDD 3.3). It is used
+// for buckets with no terminal date of their own (Open, Stale) and for the
+// reviewer ball-holding split, which is not date-ordered.
 func sortRows(rows []model.PR) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		ei := rows[i].Priority == model.PriorityElevated
 		ej := rows[j].Priority == model.PriorityElevated
 		if ei != ej {
 			return ei // elevated first
+		}
+		if rows[i].Repo != rows[j].Repo {
+			return rows[i].Repo < rows[j].Repo
+		}
+		return rows[i].Number < rows[j].Number
+	})
+}
+
+// terminalDate returns the timestamp at which a PR reached its terminal state
+// — MergedAt for a merged PR, ClosedAt for a closed one — or the zero time if
+// neither is set (a record written before either field existed). It mirrors
+// store.terminalTime for the same concept, kept as a separate render-local
+// helper since store's version is unexported and scoped to the merge path.
+func terminalDate(p model.PR) time.Time {
+	if p.MergedAt != nil {
+		return *p.MergedAt
+	}
+	if p.ClosedAt != nil {
+		return *p.ClosedAt
+	}
+	return time.Time{}
+}
+
+// sortTerminalRows orders a terminal bucket (Merged, Closed, or the reviewer
+// Done table mixing both) by most-recent-first terminal date, so the newest
+// completed item always leads (TDD 3.6). Elevated priority still sorts first,
+// matching sortRows, since a flagged row should stand out regardless of age.
+// Rows sharing a terminal date (including two zero-value dates on
+// pre-migration records) fall back to the repo/number order for a stable,
+// deterministic result.
+func sortTerminalRows(rows []model.PR) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		ei := rows[i].Priority == model.PriorityElevated
+		ej := rows[j].Priority == model.PriorityElevated
+		if ei != ej {
+			return ei // elevated first
+		}
+		ti, tj := terminalDate(rows[i]), terminalDate(rows[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj) // most recent first
 		}
 		if rows[i].Repo != rows[j].Repo {
 			return rows[i].Repo < rows[j].Repo

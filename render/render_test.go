@@ -204,6 +204,110 @@ func TestReviewFeedbackCellSignalsAuthorMustAct(t *testing.T) {
 	}
 }
 
+// TestTerminalBucketsSortNewestFirst covers TDD 3.6: Merged and Closed rows
+// order by terminal date, most recent first, rather than repo/number.
+func TestTerminalBucketsSortNewestFirst(t *testing.T) {
+	oldest := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	middle := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	newest := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		// Repo/number order (z,10 < z,20 < z,30) is the deliberate inverse of
+		// date order, so a passing test proves date order won, not a leftover
+		// repo/number coincidence.
+		{Repo: "r/z", Number: 10, Title: "Oldest merge", URL: "u10", Role: model.RoleSubmitter,
+			Bucket: model.BucketMerged, MergedAt: &oldest, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 20, Title: "Newest merge", URL: "u20", Role: model.RoleSubmitter,
+			Bucket: model.BucketMerged, MergedAt: &newest, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 30, Title: "Middle merge", URL: "u30", Role: model.RoleSubmitter,
+			Bucket: model.BucketMerged, MergedAt: &middle, Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNewest := strings.Index(md, "Newest merge")
+	iMiddle := strings.Index(md, "Middle merge")
+	iOldest := strings.Index(md, "Oldest merge")
+	if iNewest == -1 || iMiddle == -1 || iOldest == -1 {
+		t.Fatalf("expected all three merged rows present:\n%s", md)
+	}
+	if !(iNewest < iMiddle && iMiddle < iOldest) {
+		t.Errorf("merged rows should be newest-first (Newest, Middle, Oldest); got order at indices %d, %d, %d\n%s",
+			iNewest, iMiddle, iOldest, md)
+	}
+}
+
+// TestReviewerDoneSortsMergedAndClosedTogetherByDate covers TDD 3.6 for the
+// reviewer Done table, which mixes merged and closed PRs and must compare
+// MergedAt against ClosedAt as one terminal date.
+func TestReviewerDoneSortsMergedAndClosedTogetherByDate(t *testing.T) {
+	older := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 1, Title: "Old closed", URL: "u1", Role: model.RoleReviewer,
+			Bucket: model.BucketClosed, ClosedAt: &older, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 2, Title: "New merged", URL: "u2", Role: model.RoleReviewer,
+			Bucket: model.BucketMerged, MergedAt: &newer, Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNew := strings.Index(md, "New merged")
+	iOld := strings.Index(md, "Old closed")
+	if iNew == -1 || iOld == -1 {
+		t.Fatalf("expected both done rows present:\n%s", md)
+	}
+	if iOld < iNew {
+		t.Errorf("newer merged row should precede older closed row in Done table:\n%s", md)
+	}
+}
+
+// TestTerminalSortElevatedFirstThenDate covers TDD 3.6's elevated-priority
+// carve-out: an elevated row leads even when it is older than a neutral row.
+func TestTerminalSortElevatedFirstThenDate(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 1, Title: "Neutral newer", URL: "u1", Role: model.RoleSubmitter,
+			Bucket: model.BucketClosed, ClosedAt: &newer, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 2, Title: "Elevated older", URL: "u2", Role: model.RoleSubmitter,
+			Bucket: model.BucketClosed, ClosedAt: &older, Priority: model.PriorityElevated},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iElevated := strings.Index(md, "Elevated older")
+	iNeutral := strings.Index(md, "Neutral newer")
+	if iElevated == -1 || iNeutral == -1 {
+		t.Fatalf("expected both closed rows present:\n%s", md)
+	}
+	if iNeutral < iElevated {
+		t.Errorf("elevated row should lead even though it is older:\n%s", md)
+	}
+}
+
+// TestTerminalSortFallsBackToRepoNumberOnTie covers TDD 3.6's tiebreak: rows
+// with an identical terminal date (including both unset) fall back to the
+// repo/number order.
+func TestTerminalSortFallsBackToRepoNumberOnTie(t *testing.T) {
+	same := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	prs := []model.PR{
+		{Repo: "r/z", Number: 20, Title: "Later number", URL: "u20", Role: model.RoleSubmitter,
+			Bucket: model.BucketClosed, ClosedAt: &same, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 10, Title: "Earlier number", URL: "u10", Role: model.RoleSubmitter,
+			Bucket: model.BucketClosed, ClosedAt: &same, Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iEarlier := strings.Index(md, "Earlier number")
+	iLater := strings.Index(md, "Later number")
+	if iEarlier == -1 || iLater == -1 {
+		t.Fatalf("expected both rows present:\n%s", md)
+	}
+	if iLater < iEarlier {
+		t.Errorf("tied terminal dates should fall back to number order:\n%s", md)
+	}
+}
+
 func TestDoneOutcomeSubReasonFormat(t *testing.T) {
 	closed := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
 	prs := []model.PR{{Repo: "r/z", Number: 9, Title: "T", URL: "u", Role: model.RoleReviewer,

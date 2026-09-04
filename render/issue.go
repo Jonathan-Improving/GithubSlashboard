@@ -70,8 +70,8 @@ func writeIssuesSection(b *strings.Builder, issues []model.Issue, now time.Time)
 	sortIssueRows(partActive)
 	sortIssueRows(staleAuthored)
 	sortIssueRows(stalePart)
-	sortIssueRows(closedAuthored)
-	sortIssueRows(closedPart)
+	sortClosedIssueRows(closedAuthored)
+	sortClosedIssueRows(closedPart)
 
 	writeActiveIssueTable(b, fmt.Sprintf("## %s Authored (%d)", secIssueAuthored, len(authoredActive)), authoredActive, now)
 	writeActiveIssueTable(b, fmt.Sprintf("## %s Participating (%d)", secIssuePart, len(partActive)), partActive, now)
@@ -233,7 +233,8 @@ func issueNumLink(i model.Issue) string {
 }
 
 // sortIssueRows orders issue rows deterministically (elevated first, then repo,
-// then number) so rendering stays a pure function of the store (TDD 3.3).
+// then number) so rendering stays a pure function of the store (TDD 3.3). It is
+// used for the active and stale sections, which have no terminal date.
 func sortIssueRows(rows []model.Issue) {
 	sort.SliceStable(rows, func(a, b int) bool {
 		ea := rows[a].Priority == model.PriorityElevated
@@ -246,6 +247,37 @@ func sortIssueRows(rows []model.Issue) {
 		}
 		return rows[a].Number < rows[b].Number
 	})
+}
+
+// sortClosedIssueRows orders the Closed section by most-recent-first ClosedAt
+// (TDD 3.6), mirroring sortTerminalRows for PRs. Elevated priority still sorts
+// first. Rows sharing a closed date (including two unset dates on
+// pre-migration records) fall back to the repo/number order.
+func sortClosedIssueRows(rows []model.Issue) {
+	sort.SliceStable(rows, func(a, b int) bool {
+		ea := rows[a].Priority == model.PriorityElevated
+		eb := rows[b].Priority == model.PriorityElevated
+		if ea != eb {
+			return ea
+		}
+		ta, tb := issueClosedDate(rows[a]), issueClosedDate(rows[b])
+		if !ta.Equal(tb) {
+			return ta.After(tb) // most recent first
+		}
+		if rows[a].Repo != rows[b].Repo {
+			return rows[a].Repo < rows[b].Repo
+		}
+		return rows[a].Number < rows[b].Number
+	})
+}
+
+// issueClosedDate returns an issue's ClosedAt, or the zero time if unset (a
+// record written before the field existed).
+func issueClosedDate(i model.Issue) time.Time {
+	if i.ClosedAt != nil {
+		return *i.ClosedAt
+	}
+	return time.Time{}
 }
 
 // issueBucketCounts counts issues per bucket for the summary table.

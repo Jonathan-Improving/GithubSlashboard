@@ -202,6 +202,24 @@ reference them by name.
 - **When** rendered
 - **Then** its row is visibly distinguished from neutral-priority rows
 
+### 3.6 Terminal rows sort newest-first by completion date
+- **Given** a bucket of settled items — submitter Merged, submitter Closed,
+  reviewer Done (which mixes merged and closed), or the issue Closed section
+- **When** rendered
+- **Then** rows are ordered by the date the item became terminal (`MergedAt` for
+  a merged PR, `ClosedAt` for a closed PR or a closed issue) from most recent to
+  least recent, not by repo/number
+- **And** elevated priority still sorts before everything else within the
+  bucket, matching every other table (3.5) — the date order applies among rows
+  of the same priority
+- **And** rows sharing an identical terminal date, including two records that
+  both lack one (a pre-migration store), fall back to the repo/number order
+  used by the live tables, so the sort stays total and deterministic
+- **Note** every other table (Open, Stale, the reviewer ball-holding split, and
+  the issue active/stale sections) keeps the existing repo-then-number order:
+  those items have no completion date to sort by, and stability there was never
+  in question
+
 ---
 
 ## 4. Status classification
