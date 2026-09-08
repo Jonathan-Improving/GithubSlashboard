@@ -1,13 +1,44 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
+
+// TestSignalNotifyContextCancelsOnSIGTERM covers the graceful-shutdown wiring
+// added alongside sweepStaleHarvesterSessions (ANTI-PATTERNS #10): a SIGTERM
+// — the signal `launchctl bootout` sends a still-running job, e.g. when the
+// operator reloads the launchd agent mid-run to pick up a config change —
+// cancels run's context rather than the process dying outright with no chance
+// for the session provider's deferred Close() to tear down its tmux
+// session(s). This exercises the exact wiring run() uses
+// (signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)) against this
+// test process's own PID, rather than re-deriving the assertion against
+// stdlib documentation alone.
+func TestSignalNotifyContextCancelsOnSIGTERM(t *testing.T) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM to self: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Errorf("ctx.Err() = %v, want context.Canceled", ctx.Err())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("context was not cancelled within 5s of SIGTERM")
+	}
+}
 
 func TestWriteOutputCreatesFileAndParents(t *testing.T) {
 	dir := t.TempDir()

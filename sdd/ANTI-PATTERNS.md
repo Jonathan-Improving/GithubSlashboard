@@ -15,6 +15,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 7 | Sharing one timeout bound across two structurally different providers | Medium |
 | 8 | Deleting a handed-off file before the harness's asynchronous read of it | High |
 | 9 | Free-text model output extracted with only TrimSpace, no thinking-trace guard | Medium |
+| 10 | A killed (not returned) process orphans its tmux harness session | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -330,3 +331,59 @@ session, each one a chance to leak). Severity: Medium (cosmetic/confusing, not a
 data-integrity defect — the underlying classification and store were never
 affected, only the best-effort notification text).
 
+## 10. A killed (not returned) process orphans its tmux harness session
+
+**Symptom**: `tmux list-sessions` showed `GSB-Harvester-*` sessions days old — one
+run's worth, all created within the same second, matching a `ClassifyWorkers`
+pool. The tool itself was not running at the time (`launchctl print` showed
+`state = not running`); nothing currently alive had any relationship to those
+sessions.
+
+**What was tried**: Nothing needed trying to find them — `tmux list-sessions`
+plus each session's own creation timestamp was enough to see they predated the
+current run by days. The real work was tracing *why* the pool's own `Close()`
+(TDD 6.7), which does correctly `tmux kill-session` every member, had not run
+for that particular invocation. Checking the operator's own action log for that
+timestamp found a `launchctl bootout` issued minutes into that run, to reload
+the launchd agent after an unrelated schedule-config edit.
+
+**Root cause**: `defer`-based cleanup — `main`'s `defer closer.Close()` on the
+provider, and the pool's own concurrent `Close()` on each member — only runs
+when the function it is scoped to actually returns. `launchctl bootout` on a
+still-running job sends it a kill signal; the process had no signal handling of
+any kind, so it died immediately wherever it happened to be (mid-classification,
+in this case), and every `defer` between that point and `main` never got a
+chance to run. The tmux sessions those `defer`s would have killed were left
+exactly as they were, with no other code anywhere aware they existed once their
+owning process was gone.
+
+**Resolution**: Two layers, aimed at the two different ways a process can stop
+without returning normally.
+1. `main` now installs `signal.NotifyContext` for SIGTERM/SIGINT, cancelling the
+   run's context instead of leaving the process to die on the signal outright —
+   a caught signal becomes a normal (if early) return through the same path
+   that already reaches every `defer`, `launchctl bootout` included.
+2. SIGKILL cannot be caught by any program, so as a backstop, a fresh
+   session-kind provider now sweeps and kills any pre-existing
+   `GSB-Harvester-*` tmux session older than a generous age floor before
+   creating its own (this tool is single-shot and not designed to run two
+   instances at once, so any such session already alive at that point cannot
+   legitimately belong to a still-active run).
+
+**Lesson**: `defer`-based cleanup is only as reliable as the assumption that the
+function it is attached to gets to return — true for a normal error path, false
+for anything that kills the process out from under it, and an unattended
+scheduled job is exactly the context where an operator (or the scheduler
+itself, reloading its own config) is most likely to do that without warning.
+A resource whose lifetime is tied to an external, unmanaged process (a tmux
+session, in this case) needs either signal handling to make "killed" behave
+like "returned," or an independent sweep that can clean up after the case
+signal handling cannot cover — ideally both, since neither alone is complete.
+
+**Cost**: Found by operator inspection of `tmux list-sessions`, not by any log
+or test — the orphaned sessions produced no error, no log line, and no visible
+symptom in the tool's own output; they were simply idle processes consuming
+resources indefinitely until someone happened to list tmux sessions and notice
+the stale timestamps. Severity: Medium (resource leak, not a data-integrity or
+classification-correctness defect — but unbounded over time on a job that runs
+every 20 minutes for hours a day).

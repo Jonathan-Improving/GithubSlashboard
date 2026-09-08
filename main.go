@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -81,6 +82,22 @@ func run() int {
 	})
 
 	ctx := context.Background()
+
+	// A graceful termination request (SIGTERM — e.g. `launchctl bootout` on a
+	// still-running job, as happens when the operator reloads the launchd
+	// agent mid-run to pick up a config change — or SIGINT from a manual
+	// Ctrl-C) cancels ctx rather than killing the process outright, so the
+	// pipeline unwinds through its normal return path and reaches the
+	// session provider's deferred Close() (TDD 6.7), which tears down its
+	// tmux harness session(s). Without this, the process dies immediately on
+	// the signal, defer never runs, and the harness's tmux session is
+	// orphaned — the exact defect a live GSB-Harvester-* session surviving
+	// days past its run proved out (ANTI-PATTERNS #10). This is a best-effort
+	// improvement, not a guarantee: SIGKILL cannot be caught by any program,
+	// and sweepStaleHarvesterSessions below exists as the backstop for
+	// exactly that case.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if err := pipeline(ctx, cfg, log); err != nil {
 		log.Error("run failed", "err", err)

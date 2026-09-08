@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,6 +94,24 @@ func NewFromOptions(o Options) (Provider, error) {
 	case KindOneShot:
 		return newOneShotProvider(o.Name, o.Model)
 	case KindSession:
+		tmuxBin := o.TmuxBin
+		if tmuxBin == "" {
+			tmuxBin = "tmux"
+		}
+		// Sweep any GSB-Harvester-* tmux session left over from a prior
+		// invocation before creating this run's own. A session only survives
+		// past its owning process's normal exit when that process was killed
+		// rather than returning (SIGKILL, or a SIGTERM/SIGINT arriving before
+		// this build's signal handling — main.go — existed), since the pool's
+		// deferred Close() that would otherwise kill it never gets to run.
+		// This tool is single-shot and not designed to run two instances
+		// concurrently (TECH: single-shot; POLICY), so any GSB-Harvester-*
+		// session already alive when a fresh run starts building its own
+		// provider cannot legitimately belong to a still-active run — the age
+		// floor in sweepStaleHarvesterSessions exists purely as an extra
+		// margin of safety on top of that assumption, not a substitute for it
+		// (ANTI-PATTERNS #10).
+		sweepStaleHarvesterSessions(tmuxBin)
 		if o.PoolSize > 1 {
 			// Each pool member is an independent harness session; build with the
 			// same options but neutralize PoolSize to avoid recursion.
@@ -365,6 +385,62 @@ func tmuxSessionExists(tmuxBin, name string) bool {
 		tmuxBin = "tmux"
 	}
 	return exec.Command(tmuxBin, "has-session", "-t", name).Run() == nil
+}
+
+// staleHarvesterAge is how old a GSB-Harvester-* tmux session must be before
+// sweepStaleHarvesterSessions kills it. It is deliberately far longer than any
+// observed or plausible single run (the longest seen in practice is single-
+// digit minutes) — the margin exists so the sweep only ever catches a session
+// that has clearly outlived any run that could still own it, never one from a
+// run that is merely running long, even under an assumption (single-instance,
+// per TECH: single-shot) that should already make any pre-existing session
+// illegitimate on its own.
+const staleHarvesterAge = 2 * time.Hour
+
+// sweepStaleHarvesterSessions kills every GSB-Harvester-* tmux session older
+// than staleHarvesterAge. It runs once before a session-kind provider creates
+// its own session(s) (ANTI-PATTERNS #10): a session survives past its owning
+// process's normal exit only when that process was killed rather than
+// returning (SIGKILL, or a signal arriving before graceful shutdown was wired
+// up), since the pool's deferred Close() that would otherwise kill it never
+// runs. Best-effort: a missing tmux binary or a listing failure is silently
+// skipped (mirroring tmuxSessionExists's treatment of "no server running") —
+// this is upkeep, not a run-blocking precondition, so its own failure must
+// never fail the run it is trying to keep tidy for.
+func sweepStaleHarvesterSessions(tmuxBin string) {
+	sweepSessionsOlderThan(tmuxBin, staleHarvesterAge)
+}
+
+// sweepSessionsOlderThan is sweepStaleHarvesterSessions with an injectable age
+// threshold, so tests can exercise the real kill/spare decision without
+// waiting staleHarvesterAge for real or being able to backdate a tmux
+// session's own creation time (tmux has no such option).
+func sweepSessionsOlderThan(tmuxBin string, maxAge time.Duration) {
+	if tmuxBin == "" {
+		tmuxBin = "tmux"
+	}
+	out, err := exec.Command(tmuxBin, "list-sessions", "-F", "#{session_name} #{session_created}").Output()
+	if err != nil {
+		// No server running (nothing to sweep) or tmux unavailable — either
+		// way, newHarnessSession's own lookupTmux call surfaces a real
+		// missing-tmux error to the caller; this is not the place to.
+		return
+	}
+	now := time.Now()
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !strings.HasPrefix(fields[0], tmuxSessionPrefix) {
+			continue
+		}
+		created, perr := strconv.ParseInt(fields[1], 10, 64)
+		if perr != nil {
+			continue
+		}
+		if now.Sub(time.Unix(created, 0)) < maxAge {
+			continue
+		}
+		_ = exec.Command(tmuxBin, "kill-session", "-t", fields[0]).Run()
+	}
 }
 
 // randomSuffix returns n characters drawn uniformly from sessionSuffixAlphabet

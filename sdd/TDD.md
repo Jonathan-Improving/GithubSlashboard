@@ -505,6 +505,31 @@ reference them by name.
   harness's startup cost is not paid per PR — and each PR is judged from a reset,
   a priori context with no residue from the previous PR
 
+### 6.7a A harness's tmux session never outlives its owning process
+- **Given** a session provider's tmux harness, launched under a
+  `GSB-Harvester-<random>` session name
+- **When** the owning run ends
+- **Then** that tmux session is killed as part of ending — either normally (the
+  pool's deferred `Close()`, TDD 6.7) or, when the process instead receives
+  SIGTERM or SIGINT (e.g. `launchctl bootout` on a still-running job, or a
+  manual Ctrl-C), by that signal cancelling the run's context so the pipeline
+  unwinds through its ordinary return path and still reaches the same deferred
+  `Close()` — a signal is handled as a request to shut down gracefully, not
+  treated as a raw process kill
+- **And** as a backstop for the one case neither of those can cover — SIGKILL,
+  which no program can catch — a fresh session-kind provider sweeps and kills
+  any pre-existing `GSB-Harvester-*` tmux session older than a generous age
+  floor before creating its own, since this tool runs single-shot and is not
+  designed to run two instances concurrently (TECH), so any such session
+  already alive when a new run starts building its provider cannot legitimately
+  belong to a still-active run
+- **And** the sweep's age floor is generous enough that it can never mistake an
+  in-progress run's own session for a stale one, even under that single-
+  instance assumption already ruling out the alternative
+- **Note** this is ANTI-PATTERNS #10: without any of the above, a session
+  survives its owning process for as long as the machine stays up, since
+  nothing else on the system knows the session exists or is safe to remove
+
 ### 6.8 A session provider returns its verdict through the verdict tool, with a failsafe
 - **Given** a session harness classifying a PR
 - **When** it produces its verdict
