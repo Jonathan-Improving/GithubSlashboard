@@ -51,6 +51,22 @@ reference them by name.
 - **Then** it aborts without modifying the YAML store or the Markdown output, and
   reports the error
 
+### 1.2a A search that times out server-side is treated as a failure, not a partial success
+- **Given** a GitHub search (any of the `author:`, `review-requested:`,
+  `reviewed-by:`, or issue-search equivalents) that times out server-side
+- **When** the response comes back — GitHub returns HTTP 200 in this case, with
+  `incomplete_results: true` and whatever partial match set it had found before
+  the timeout, not an error
+- **Then** the tool treats that response as a failure exactly like any other
+  search error (1.2) — aborting acquisition without touching the store — rather
+  than proceeding on a result set it already knows, in the moment, is not the
+  whole answer
+- **Note** this is ANTI-PATTERNS #11: a PR the operator authored can be briefly
+  absent from an incomplete `author:` page for no reason connected to the PR
+  itself, and — before this guard — would then be picked up by a later,
+  complete `reviewed-by:` page instead and persisted with the wrong role, with
+  no error anywhere in the run's own logs to explain why
+
 ### 1.3 Read-only guarantee
 - **Given** any operation the tool performs
 - **When** it runs

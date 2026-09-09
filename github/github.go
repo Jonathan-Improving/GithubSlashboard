@@ -149,6 +149,19 @@ func (c *Client) FetchTracked(ctx context.Context, prior map[string]model.PR, in
 
 // searchPRs runs a read-only issue search and maps each result into a base PR
 // record (without its event trail).
+//
+// A GitHub search that times out server-side still returns 200 with whatever
+// partial match set it had found so far, flagged via IncompleteResults — not
+// an error go-github surfaces on its own. Silently accepting that partial set
+// here caused a real, hard-to-reproduce defect: an author's own PR briefly
+// missing from the author: search (mid-timeout) fell through to the
+// reviewed-by: search instead and was persisted with the wrong role, with no
+// error anywhere in the run's logs (ANTI-PATTERNS #11). Role is exactly the
+// kind of deterministic, SCHEMA-level fact this tool's own design principle
+// says must never be silently wrong, so an incomplete page is treated as a
+// hard error — aborting acquisition without touching the store (TDD 1.2),
+// same as any other search failure — rather than proceeding on a result set
+// that is known, in the moment, to not be the whole answer.
 func (c *Client) searchPRs(ctx context.Context, query string, role model.Role) ([]model.PR, error) {
 	opts := &gh.SearchOptions{ListOptions: gh.ListOptions{PerPage: 100}}
 	var out []model.PR
@@ -156,6 +169,9 @@ func (c *Client) searchPRs(ctx context.Context, query string, role model.Role) (
 		res, resp, err := c.rest.Search.Issues(ctx, query, opts)
 		if err != nil {
 			return nil, err
+		}
+		if res.GetIncompleteResults() {
+			return nil, fmt.Errorf("search %q returned incomplete results (GitHub search timeout) — aborting rather than persisting a partial match set", query)
 		}
 		for _, issue := range res.Issues {
 			if issue.PullRequestLinks == nil {

@@ -16,6 +16,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 8 | Deleting a handed-off file before the harness's asynchronous read of it | High |
 | 9 | Free-text model output extracted with only TrimSpace, no thinking-trace guard | Medium |
 | 10 | A killed (not returned) process orphans its tmux harness session | Medium |
+| 11 | A timed-out GitHub search returns 200 with a silently partial result set | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -336,6 +337,65 @@ affected, only the best-effort notification text).
 **Symptom**: `tmux list-sessions` showed `GSB-Harvester-*` sessions days old — one
 run's worth, all created within the same second, matching a `ClassifyWorkers`
 pool. The tool itself was not running at the time (`launchctl print` showed
+
+## 11. A timed-out GitHub search returns 200 with a silently partial result set
+
+**Symptom**: `valkey-io/valkey-glide-ruby#295` — a PR the operator authored —
+was persisted with `role: reviewer` instead of `role: submitter`. The
+misclassification followed from there: a reviewer-role row on a PR with no
+pending review request read as an odd, out-of-place "awaiting our review" note
+on the operator's own work. No error appeared anywhere in the run's logs;
+every phase logged success.
+
+**What was tried**: Read every step of the role-assignment path top to bottom
+(the three-search fetch, the "submitter wins" dedup, `store.Merge`,
+classification) and could not find a defect — each step, read in isolation,
+handles role correctly. Wrote a throwaway debug test calling `searchPRs` and
+`FetchTracked` directly against live GitHub: it returned the *correct* role
+both times, contradicting the bad data actually on disk. That contradiction —
+code proven correct in isolation, data proven wrong on disk — was the signal
+that the defect was not in any function's logic, but in an assumption about
+what a successful call from that function could return.
+
+**Root cause**: GitHub's search API can return HTTP 200 with
+`incomplete_results: true` when a query times out server-side, returning only
+the partial match set found before the timeout — not an error `go-github`
+surfaces on its own; the caller has to check the flag itself.
+`searchPRs`/`searchIssues` never checked it. On the one run that produced the
+bad record, the `is:pr author:<login>` search most likely timed out mid-scan
+and came back missing PR #295 (a fact impossible to reproduce on demand,
+since search timeouts are load-dependent and intermittent) — so `authored`
+never contained it, the "submitter wins" dedup never got a chance to run for
+it, and the later `reviewed-by:` search (which does regularly return it,
+since the operator has left review comments on their own PR) inserted it
+fresh as `reviewer`. Every function behaved exactly as its own logic says it
+should; the actual input just was not what every other run's input happens to
+be.
+
+**Resolution**: Check `IncompleteResults` on every page of both search
+functions and return a hard error immediately, mirroring how any other search
+failure already aborts acquisition before touching the store (TDD 1.2, now
+1.2a) — a known-partial result set is treated as no better than an outright
+API error, not accepted as a best-effort answer.
+
+**Lesson**: A function can be provably correct against every input it is ever
+fed and still produce a wrong answer, when what actually varies between a
+correct run and an incorrect one is which inputs the *upstream* call is
+capable of returning — including a "successful" (200, no error) response that
+is silently less complete than every other response the same call has ever
+produced. When a defect resists explanation despite each step checking out
+individually, the next place to look is whether the API contract itself has a
+partial-success shape the code never considered, not whether the code's own
+logic has a subtle flaw. GitHub's REST client library exposes the flag; it
+does not raise it as an error, so nothing forces a caller to notice it exists.
+
+**Cost**: Unknown how many prior runs this affected before the specific report
+that triggered this investigation — search timeouts are intermittent and this
+defect left no log trace, so there is no way to retroactively audit how often
+it fired. Severity: Medium (a wrong deterministic fact — role — persisted
+indefinitely once written, since nothing else in the pipeline re-derives or
+corrects it once acquisition has set it, but confined to the rare timeout
+window rather than a systemic every-run defect).
 `state = not running`); nothing currently alive had any relationship to those
 sessions.
 

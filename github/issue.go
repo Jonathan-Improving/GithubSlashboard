@@ -95,6 +95,13 @@ func (c *Client) FetchIssues(ctx context.Context, prior map[string]model.Issue, 
 // API returns both from the same endpoint, and `is:issue` is honored server-side,
 // but the PullRequestLinks check makes the exclusion explicit rather than
 // trusting the qualifier alone.
+//
+// Guards against the same GitHub search-timeout defect searchPRs guards
+// against (ANTI-PATTERNS #11): a search that times out server-side still
+// returns 200 with only a partial match set, flagged via IncompleteResults —
+// not an error go-github surfaces on its own. Treated as a hard error here
+// too, aborting acquisition without touching the store (TDD 1.2), rather than
+// silently persisting a role or bucket derived from a known-partial result.
 func (c *Client) searchIssues(ctx context.Context, query string, role model.IssueRole) ([]model.Issue, error) {
 	opts := &gh.SearchOptions{ListOptions: gh.ListOptions{PerPage: 100}}
 	var out []model.Issue
@@ -102,6 +109,9 @@ func (c *Client) searchIssues(ctx context.Context, query string, role model.Issu
 		res, resp, err := c.rest.Search.Issues(ctx, query, opts)
 		if err != nil {
 			return nil, err
+		}
+		if res.GetIncompleteResults() {
+			return nil, fmt.Errorf("search %q returned incomplete results (GitHub search timeout) — aborting rather than persisting a partial match set", query)
 		}
 		for _, issue := range res.Issues {
 			if issue.PullRequestLinks != nil {
