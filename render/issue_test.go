@@ -297,6 +297,62 @@ func TestUpdatedUnknownRendersDash(t *testing.T) {
 
 // TestStaleIssueTableShape proves the stale issue tables carry the same columns as
 // the active ones, since a stale issue is still open upstream.
+// TestActiveIssuesSortByLastActivity covers TDD 3.6a's extension to the issue
+// Authored/Participating active sections: they sort by LastActivity, most
+// recent first, rather than repo/number.
+func TestActiveIssuesSortByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	issues := []model.Issue{
+		// Number order (10 < 20) is the deliberate inverse of activity order.
+		{Repo: "a/x", Number: 10, Title: "Newest activity", URL: "ui10", Role: model.IssueRoleAuthor,
+			Created: created, LastActivity: newer, Bucket: model.IssueBucketOpen,
+			Action: model.IssueActionAwaitingOthers, Priority: model.PriorityNeutral},
+		{Repo: "a/x", Number: 20, Title: "Oldest activity", URL: "ui20", Role: model.IssueRoleAuthor,
+			Created: created, LastActivity: older, Bucket: model.IssueBucketOpen,
+			Action: model.IssueActionAwaitingOthers, Priority: model.PriorityNeutral},
+	}
+	md := Render(nil, issues, "x", issueNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both authored-active rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("active issues should be newest-activity-first:\n%s", md)
+	}
+}
+
+// TestStaleIssuesSortByLastActivity covers TDD 3.6a's extension to the issue
+// Stale sections: they sort by LastActivity, most recent first.
+func TestStaleIssuesSortByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	issues := []model.Issue{
+		{Repo: "a/x", Number: 10, Title: "Newest activity", URL: "ui10", Role: model.IssueRoleAuthor,
+			Created: created, LastActivity: newer, Bucket: model.IssueBucketStale,
+			Priority: model.PriorityNeutral},
+		{Repo: "a/x", Number: 20, Title: "Oldest activity", URL: "ui20", Role: model.IssueRoleAuthor,
+			Created: created, LastActivity: older, Bucket: model.IssueBucketStale,
+			Priority: model.PriorityNeutral},
+	}
+	md := Render(nil, issues, "x", issueNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both stale-authored rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("stale issues should be newest-activity-first:\n%s", md)
+	}
+}
+
 func TestStaleIssueTableShape(t *testing.T) {
 	md := Render(nil, sampleIssues(), "x", issueNow)
 	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Reason |") {

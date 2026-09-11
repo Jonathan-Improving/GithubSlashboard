@@ -308,6 +308,192 @@ func TestTerminalSortFallsBackToRepoNumberOnTie(t *testing.T) {
 	}
 }
 
+// TestReviewSubmittedSortsByLastActivity covers TDD 3.6a: the reviewer
+// Open — Review Submitted table orders by LastActivity, most recent first,
+// rather than repo/number.
+func TestReviewSubmittedSortsByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		// Number order (10 < 20) is the deliberate inverse of activity order.
+		{Repo: "r/z", Number: 10, Title: "Newest activity", URL: "u10", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: newer,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
+			Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both review-submitted rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("review-submitted rows should be newest-activity-first:\n%s", md)
+	}
+}
+
+// TestReviewSubmittedElevatedFirstThenActivity covers TDD 3.6a's elevated
+// carve-out: an elevated row leads even when it is less recently active.
+func TestReviewSubmittedElevatedFirstThenActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 1, Title: "Neutral newer", URL: "u1", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: newer,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 2, Title: "Elevated older", URL: "u2", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
+			Priority: model.PriorityElevated},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iElevated := strings.Index(md, "Elevated older")
+	iNeutral := strings.Index(md, "Neutral newer")
+	if iElevated == -1 || iNeutral == -1 {
+		t.Fatalf("expected both rows present:\n%s", md)
+	}
+	if iNeutral < iElevated {
+		t.Errorf("elevated row should lead even though it is less recently active:\n%s", md)
+	}
+}
+
+// TestReviewSubmittedFallsBackToRepoNumberOnTie covers TDD 3.6a's tiebreak:
+// rows with an identical activity date fall back to the repo/number order.
+func TestReviewSubmittedFallsBackToRepoNumberOnTie(t *testing.T) {
+	same := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	prs := []model.PR{
+		{Repo: "r/z", Number: 20, Title: "Later number", URL: "u20", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: same,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 10, Title: "Earlier number", URL: "u10", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: same,
+			Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iEarlier := strings.Index(md, "Earlier number")
+	iLater := strings.Index(md, "Later number")
+	if iEarlier == -1 || iLater == -1 {
+		t.Fatalf("expected both rows present:\n%s", md)
+	}
+	if iLater < iEarlier {
+		t.Errorf("tied activity dates should fall back to number order:\n%s", md)
+	}
+}
+
+// TestAwaitingActionSortsByLastActivity covers TDD 3.6a's extension to the
+// Awaiting Our Action table: it sorts by LastActivity like every other live
+// PR table, not by repo/number.
+func TestAwaitingActionSortsByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		// Number order (10 < 20) is the deliberate inverse of activity order.
+		{Repo: "r/z", Number: 10, Title: "Newest activity", URL: "u10", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: newer,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleReviewer,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: older,
+			Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both awaiting-action rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("Awaiting Our Action should be newest-activity-first:\n%s", md)
+	}
+}
+
+// TestSubmitterOpenSortsByLastActivity covers TDD 3.6a's extension to the
+// submitter Open table.
+func TestSubmitterOpenSortsByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 10, Title: "Newest activity", URL: "u10", Role: model.RoleSubmitter,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: newer,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleSubmitter,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: older,
+			Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both open rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("submitter Open should be newest-activity-first:\n%s", md)
+	}
+}
+
+// TestSubmitterOpenElevatedLeadsDespiteOlderActivity covers TDD 3.6a's
+// elevated-precedes-activity clarification: an elevated PR leads even when a
+// neutral PR in the same table has more recent activity — this is the exact
+// scenario the operator flagged as looking wrong before confirming it is the
+// intended design (elevated is a higher-precedence sort key than activity,
+// not a tiebreak within it).
+func TestSubmitterOpenElevatedLeadsDespiteOlderActivity(t *testing.T) {
+	olderElevated := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newerNeutral := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 1, Title: "Neutral touched today", URL: "u1", Role: model.RoleSubmitter,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: newerNeutral,
+			Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 2, Title: "Elevated touched 2 days ago", URL: "u2", Role: model.RoleSubmitter,
+			Bucket: model.BucketOpen, Action: model.ActionBlockedExternal, LastActivity: olderElevated,
+			Priority: model.PriorityElevated},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iElevated := strings.Index(md, "Elevated touched 2 days ago")
+	iNeutral := strings.Index(md, "Neutral touched today")
+	if iElevated == -1 || iNeutral == -1 {
+		t.Fatalf("expected both open rows present:\n%s", md)
+	}
+	if iNeutral < iElevated {
+		t.Errorf("elevated row should lead the submitter Open table even though a neutral row was touched more recently:\n%s", md)
+	}
+}
+
+// TestSubmitterStaleSortsByLastActivity covers TDD 3.6a's extension to the
+// submitter Stale table.
+func TestSubmitterStaleSortsByLastActivity(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+
+	prs := []model.PR{
+		{Repo: "r/z", Number: 10, Title: "Newest activity", URL: "u10", Role: model.RoleSubmitter,
+			Bucket: model.BucketStale, LastActivity: newer, Priority: model.PriorityNeutral},
+		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleSubmitter,
+			Bucket: model.BucketStale, LastActivity: older, Priority: model.PriorityNeutral},
+	}
+	md := Render(prs, nil, "x", refNow)
+
+	iNewest := strings.Index(md, "Newest activity")
+	iOldest := strings.Index(md, "Oldest activity")
+	if iNewest == -1 || iOldest == -1 {
+		t.Fatalf("expected both stale rows present:\n%s", md)
+	}
+	if iOldest < iNewest {
+		t.Errorf("submitter Stale should be newest-activity-first:\n%s", md)
+	}
+}
+
 func TestDoneOutcomeSubReasonFormat(t *testing.T) {
 	closed := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
 	prs := []model.PR{{Repo: "r/z", Number: 9, Title: "T", URL: "u", Role: model.RoleReviewer,

@@ -229,12 +229,35 @@ reference them by name.
   bucket, matching every other table (3.5) — the date order applies among rows
   of the same priority
 - **And** rows sharing an identical terminal date, including two records that
-  both lack one (a pre-migration store), fall back to the repo/number order
-  used by the live tables, so the sort stays total and deterministic
-- **Note** every other table (Open, Stale, the reviewer ball-holding split, and
-  the issue active/stale sections) keeps the existing repo-then-number order:
-  those items have no completion date to sort by, and stability there was never
-  in question
+  both lack one (a pre-migration store), fall back to the repo/number order,
+  so the sort stays total and deterministic
+- **Note** every issue Closed section, and the reviewer Done table, are the
+  only tables with a genuine completion date; every other live table (3.6a)
+  sorts by activity instead, since neither ordering makes sense for the other
+  kind of table
+
+### 3.6a Every live PR/issue table sorts by most recent activity
+- **Given** any table of items that have not reached a terminal state —
+  submitter Open, submitter Stale, reviewer Awaiting Our Action, reviewer
+  Open — Review Submitted, and the issue Authored/Participating active and
+  Stale sections
+- **When** rendered
+- **Then** rows are ordered by `LastActivity` (the Updated column's own value)
+  from most recent to least recent, not by repo/number — the item that moved
+  most recently is the one most likely worth a fresh look, so it leads
+- **And** elevated priority still sorts before everything else, matching every
+  other table (3.5) — the activity order applies among rows of the same
+  priority. An elevated row therefore leads even when its own activity is
+  older than a neutral row's — e.g. an elevated PR last touched 2 days ago
+  still sorts above a neutral PR touched today — since elevated is a
+  higher-precedence key than activity, not a tiebreak within it
+- **And** rows sharing an identical activity date, including two records that
+  both lack one, fall back to the repo/number order, so the sort stays total
+  and deterministic
+- **Note** this applies uniformly across every live table, including
+  `Awaiting Our Action` — a row already needing the operator's attention by
+  construction (3.1's ball-holding split) is still worth surfacing by recency
+  within that set, the same as everywhere else
 
 ---
 

@@ -245,8 +245,8 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
 			}
 		}
 	}
-	sortRows(awaitingUs)
-	sortRows(reviewSubmitted)
+	sortByLastActivity(awaitingUs)
+	sortByLastActivity(reviewSubmitted)
 	sortTerminalRows(done)
 
 	// Awaiting Our Action — Repo | PR | Title | Updated | Our Review
@@ -462,7 +462,7 @@ func selectBucket(prs []model.PR, bucket model.Bucket) []model.PR {
 			out = append(out, p)
 		}
 	}
-	sortRows(out)
+	sortByLastActivity(out)
 	return out
 }
 
@@ -489,16 +489,23 @@ func filterRole(prs []model.PR, role model.Role) []model.PR {
 	return out
 }
 
-// sortRows orders rows deterministically (elevated first, then repo, then
-// number) so rendering is a pure function of the store (TDD 3.3). It is used
-// for buckets with no terminal date of their own (Open, Stale) and for the
-// reviewer ball-holding split, which is not date-ordered.
-func sortRows(rows []model.PR) {
+// sortByLastActivity orders rows by LastActivity descending (most recently
+// updated first), so every live PR table (submitter Open/Stale, reviewer
+// Awaiting Our Action, reviewer Open — Review Submitted) surfaces the PR that
+// moved most recently — the one most likely to need a fresh look — ahead of
+// one that has sat quietly. Elevated priority still sorts first, matching
+// every other table (3.5); a tie (including two rows sharing an unknown
+// activity date) falls back to the repo/number order used elsewhere.
+func sortByLastActivity(rows []model.PR) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		ei := rows[i].Priority == model.PriorityElevated
 		ej := rows[j].Priority == model.PriorityElevated
 		if ei != ej {
 			return ei // elevated first
+		}
+		ai, aj := rows[i].LastActivity, rows[j].LastActivity
+		if !ai.Equal(aj) {
+			return ai.After(aj) // most recently updated first
 		}
 		if rows[i].Repo != rows[j].Repo {
 			return rows[i].Repo < rows[j].Repo
@@ -525,7 +532,8 @@ func terminalDate(p model.PR) time.Time {
 // sortTerminalRows orders a terminal bucket (Merged, Closed, or the reviewer
 // Done table mixing both) by most-recent-first terminal date, so the newest
 // completed item always leads (TDD 3.6). Elevated priority still sorts first,
-// matching sortRows, since a flagged row should stand out regardless of age.
+// matching sortByLastActivity, since a flagged row should stand out regardless
+// of age.
 // Rows sharing a terminal date (including two zero-value dates on
 // pre-migration records) fall back to the repo/number order for a stable,
 // deterministic result.

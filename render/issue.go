@@ -66,10 +66,10 @@ func writeIssuesSection(b *strings.Builder, issues []model.Issue, now time.Time)
 			partActive = append(partActive, i)
 		}
 	}
-	sortIssueRows(authoredActive)
-	sortIssueRows(partActive)
-	sortIssueRows(staleAuthored)
-	sortIssueRows(stalePart)
+	sortIssueRowsByLastActivity(authoredActive)
+	sortIssueRowsByLastActivity(partActive)
+	sortIssueRowsByLastActivity(staleAuthored)
+	sortIssueRowsByLastActivity(stalePart)
 	sortClosedIssueRows(closedAuthored)
 	sortClosedIssueRows(closedPart)
 
@@ -232,15 +232,19 @@ func issueNumLink(i model.Issue) string {
 	return fmt.Sprintf("[#%d](%s)", i.Number, i.URL)
 }
 
-// sortIssueRows orders issue rows deterministically (elevated first, then repo,
-// then number) so rendering stays a pure function of the store (TDD 3.3). It is
+// sortIssueRowsByLastActivity orders issue rows by LastActivity descending
+// (most recently updated first), mirroring sortByLastActivity for PRs. It is
 // used for the active and stale sections, which have no terminal date.
-func sortIssueRows(rows []model.Issue) {
+func sortIssueRowsByLastActivity(rows []model.Issue) {
 	sort.SliceStable(rows, func(a, b int) bool {
 		ea := rows[a].Priority == model.PriorityElevated
 		eb := rows[b].Priority == model.PriorityElevated
 		if ea != eb {
 			return ea
+		}
+		aa, ab := rows[a].LastActivity, rows[b].LastActivity
+		if !aa.Equal(ab) {
+			return aa.After(ab) // most recently updated first
 		}
 		if rows[a].Repo != rows[b].Repo {
 			return rows[a].Repo < rows[b].Repo
