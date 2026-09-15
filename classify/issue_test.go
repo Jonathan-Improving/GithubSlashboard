@@ -440,3 +440,114 @@ func TestClassifyIssuesPreservesOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestIssueWasJudgedOnOpenToClosedTransition covers TDD 9.2 for issues,
+// mirroring TestWasJudgedOnOpenToClosedTransition for PRs: an issue that
+// transitions from a prior stored bucket of Open to Closed this run sets
+// WasJudged, so the notification hook fires — issues must be treated
+// consistently with PRs for bucket-transition notification.
+func TestIssueWasJudgedOnOpenToClosedTransition(t *testing.T) {
+	prior := model.Issue{Repo: "a/x", Number: 70, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
+	c, _ := issueClassifierWithPrior(
+		`{"bucket":"closed","priority":"neutral","companion":"nothing further to report","emoji":"✅"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	fresh := model.Issue{
+		Repo: "a/x", Number: 70, Role: model.IssueRoleAuthor, GitHubClosed: true,
+		CloseReason: model.IssueCloseReasonCompleted, CommentCount: 1,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "closing this out"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if got.Bucket != model.IssueBucketClosed {
+		t.Fatalf("expected closed floor, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Open→Closed is a transition and must set WasJudged for issues too (TDD 9.2)")
+	}
+}
+
+// TestIssueWasJudgedOnOpenToStaleTransition mirrors the PR stale case: the
+// operator explicitly asked for this notification.
+func TestIssueWasJudgedOnOpenToStaleTransition(t *testing.T) {
+	prior := model.Issue{Repo: "a/x", Number: 71, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
+	c, _ := issueClassifierWithPrior(
+		`{"bucket":"stale","priority":"neutral","companion":"nothing further to report","emoji":"👀"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	fresh := model.Issue{
+		Repo: "a/x", Number: 71, Role: model.IssueRoleAuthor, CommentCount: 1,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "going quiet"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if got.Bucket != model.IssueBucketStale {
+		t.Fatalf("expected stale bucket, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Open→Stale is a transition the operator asked to be notified about, for issues too (TDD 9.2)")
+	}
+}
+
+// TestIssueWasJudgedOnStaleToOpenTransition mirrors the PR "someone finally
+// touched a dead PR" case for issues.
+func TestIssueWasJudgedOnStaleToOpenTransition(t *testing.T) {
+	prior := model.Issue{Repo: "a/x", Number: 72, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketStale}
+	c, _ := issueClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_response","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	fresh := model.Issue{
+		Repo: "a/x", Number: 72, Role: model.IssueRoleAuthor, CommentCount: 1,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "reviving this"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if got.Bucket != model.IssueBucketOpen {
+		t.Fatalf("expected open bucket, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Stale→Open is a transition the operator asked to be notified about, for issues too (TDD 9.2)")
+	}
+}
+
+// TestIssueWasJudgedFalseWhenBucketUnchanged covers the negative case for
+// issues: staying in the same bucket does not set WasJudged.
+func TestIssueWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
+	prior := model.Issue{Repo: "a/x", Number: 73, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
+	c, _ := issueClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_others","priority":"neutral","companion":"still waiting here","emoji":"🔄"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	fresh := model.Issue{
+		Repo: "a/x", Number: 73, Role: model.IssueRoleAuthor, CommentCount: 1,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "still going"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if got.Bucket != model.IssueBucketOpen {
+		t.Fatalf("expected open bucket, got %q", got.Bucket)
+	}
+	if got.WasJudged {
+		t.Error("Open→Open is not a transition for an issue either and must not set WasJudged")
+	}
+}
+
+// TestIssueWasJudgedFalseOnFirstSeenIssue covers the first-seen case for
+// issues: no prior record means no transition to report.
+func TestIssueWasJudgedFalseOnFirstSeenIssue(t *testing.T) {
+	c := issueClassifier(fixedProvider{out: `{"bucket":"open","action":"triage","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`})
+	fresh := model.Issue{
+		Repo: "a/x", Number: 74, Role: model.IssueRoleAuthor, CommentCount: 1,
+		Created: issueRefNow, LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "brand new"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+	if got.WasJudged {
+		t.Error("a first-seen issue has no prior bucket to transition from and must not set WasJudged")
+	}
+}

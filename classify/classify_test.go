@@ -736,3 +736,141 @@ func TestPreviouslyUnverifiedPriorAlwaysInvokesProvider(t *testing.T) {
 		t.Errorf("expected the freshly judged action, got %q", got.Action)
 	}
 }
+
+// TestWasJudgedOnOpenToMergedTransition covers TDD 9.2's reversal: a PR that
+// transitions from a prior stored bucket of Open to Merged this run sets
+// WasJudged, so the notification hook actually fires on a merge — the exact
+// live defect this rubric was rewritten to fix (a merged PR silently never
+// appearing in a single notification, traced to WasJudged being hardcoded to
+// "bucket == open").
+func TestWasJudgedOnOpenToMergedTransition(t *testing.T) {
+	prior := model.PR{Repo: "o/n", Number: 60, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"merge_ready","priority":"neutral","companion":"nothing further to report","emoji":"✅"}`,
+		time.Now(), map[string]model.PR{prior.Key(): prior})
+
+	fresh := model.PR{Repo: "o/n", Number: 60, Role: model.RoleSubmitter, GitHubState: model.GitHubStateMerged}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketMerged {
+		t.Fatalf("expected merged floor, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Open→Merged is a transition and must set WasJudged so the notification hook fires (TDD 9.2)")
+	}
+}
+
+// TestWasJudgedOnOpenToClosedTransition mirrors the merged case for a closed
+// PR.
+func TestWasJudgedOnOpenToClosedTransition(t *testing.T) {
+	prior := model.PR{Repo: "o/n", Number: 61, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"closed","close_reason":"cancelled","priority":"neutral","companion":"nothing further to report","emoji":"🗑️"}`,
+		time.Now(), map[string]model.PR{prior.Key(): prior})
+
+	fresh := model.PR{Repo: "o/n", Number: 61, Role: model.RoleSubmitter, GitHubState: model.GitHubStateClosed}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketClosed {
+		t.Fatalf("expected closed floor, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Open→Closed is a transition and must set WasJudged (TDD 9.2)")
+	}
+}
+
+// TestWasJudgedOnOpenToStaleTransition covers the reversal for stale: the
+// operator explicitly asked for this — a PR that just went stale is worth
+// knowing about, unlike the old open-only rule.
+func TestWasJudgedOnOpenToStaleTransition(t *testing.T) {
+	now := time.Now()
+	prior := model.PR{Repo: "o/n", Number: 62, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"stale","priority":"neutral","companion":"nothing further to report","emoji":"👀"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	fresh := model.PR{
+		Repo: "o/n", Number: 62, Role: model.RoleSubmitter, GitHubState: model.GitHubStateOpen,
+		Created: now, LastActivity: now,
+		Events: []model.Event{{Timestamp: now, Kind: model.EventComment, Text: "going quiet"}},
+	}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketStale {
+		t.Fatalf("expected stale bucket, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Open→Stale is a transition the operator asked to be notified about and must set WasJudged (TDD 9.2)")
+	}
+}
+
+// TestWasJudgedOnStaleToOpenTransition covers the operator's explicit
+// "someone finally touched a dead PR" case: a PR whose prior bucket was Stale
+// and is freshly judged back into Open must set WasJudged.
+func TestWasJudgedOnStaleToOpenTransition(t *testing.T) {
+	now := time.Now()
+	prior := model.PR{Repo: "o/n", Number: 63, Role: model.RoleSubmitter, Bucket: model.BucketStale}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	fresh := model.PR{
+		Repo: "o/n", Number: 63, Role: model.RoleSubmitter, GitHubState: model.GitHubStateOpen,
+		Created: now, LastActivity: now,
+		Events: []model.Event{{Timestamp: now, Kind: model.EventComment, Text: "reviving this"}},
+	}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketOpen {
+		t.Fatalf("expected open bucket, got %q", got.Bucket)
+	}
+	if !got.WasJudged {
+		t.Error("Stale→Open is a transition the operator asked to be notified about and must set WasJudged (TDD 9.2)")
+	}
+}
+
+// TestWasJudgedFalseWhenBucketUnchanged covers the negative case: a PR that
+// stays in the same bucket (even if freshly judged, even if unverified) does
+// not set WasJudged — only an actual transition does.
+func TestWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
+	now := time.Now()
+	prior := model.PR{Repo: "o/n", Number: 64, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"still open","emoji":"🔄"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	fresh := model.PR{
+		Repo: "o/n", Number: 64, Role: model.RoleSubmitter, GitHubState: model.GitHubStateOpen,
+		Created: now, LastActivity: now,
+		Events: []model.Event{{Timestamp: now, Kind: model.EventComment, Text: "still going"}},
+	}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketOpen {
+		t.Fatalf("expected open bucket, got %q", got.Bucket)
+	}
+	if got.WasJudged {
+		t.Error("Open→Open is not a transition and must not set WasJudged, even though the provider was freshly consulted")
+	}
+}
+
+// TestWasJudgedFalseOnFirstSeenPR covers the first-seen case: a PR with no
+// prior stored record is not a "transition" — 9.1's existing first-seen
+// handling already surfaces it via the classification population itself, and
+// WasJudged staying false here is correct (there is nothing to have
+// transitioned from).
+func TestWasJudgedFalseOnFirstSeenPR(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(
+		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`,
+		now)
+	fresh := model.PR{
+		Repo: "o/n", Number: 65, Role: model.RoleSubmitter, GitHubState: model.GitHubStateOpen,
+		Created: now, LastActivity: now,
+		Events: []model.Event{{Timestamp: now, Kind: model.EventComment, Text: "brand new"}},
+	}
+	got := c.classifyOne(context.Background(), fresh)
+	if got.WasJudged {
+		t.Error("a first-seen PR has no prior bucket to transition from and must not set WasJudged")
+	}
+}

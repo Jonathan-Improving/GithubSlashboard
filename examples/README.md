@@ -127,8 +127,9 @@ below); `sdd/SCHEMA.md` documents the exact request and response shapes.
 ## Notification hook
 
 Beyond the status document, the tool can prompt you to look at it: after a run
-in which at least one open PR or issue actually changed enough to need a fresh
-judgment, it asks the provider for a one-sentence summary and writes a small
+in which at least one PR or issue transitioned to a different bucket than it
+had before — including a merge, a close, going stale, or coming back from
+stale — it asks the provider for a one-sentence summary and writes a small
 JSON payload to a command of your choosing.
 
 ```bash

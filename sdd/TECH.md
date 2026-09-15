@@ -106,11 +106,12 @@ Operator-set fields survive re-runs (TDD 2.2). For the document field reference,
 see SCHEMA.md.
 
 **Notification hook (optional, outbound).** After classification, `notify`
-collects every open PR/issue that reached the provider for a fresh judgment
-this run and, when that set is non-empty, asks the same provider for a short
-summary sentence (`Summarize` — a distinct, simpler contract than per-item
-judgment, TDD 6.9) and writes a JSON payload to the stdin of a configured
-external command (`GSB_NOTIFY_HOOK`), bounded by a timeout. This is the one
+collects every PR/issue whose bucket this run differs from its prior stored
+bucket — any transition, including into or out of merged/closed/stale — and,
+when that set is non-empty, asks the same provider for a short summary
+sentence (`Summarize` — a distinct, simpler contract than per-item judgment,
+TDD 6.9) and writes a JSON payload to the stdin of a configured external
+command (`GSB_NOTIFY_HOOK`), bounded by a timeout. This is the one
 outbound integration point beyond GitHub reads and the provider call, and it
 is deliberately the last thing the pipeline does — after the status document
 is already written, so a failing or slow hook never blocks or corrupts the
@@ -133,7 +134,7 @@ cannot be tricked into command injection by adversarial GitHub content
 | `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink; which strategy a given provider name uses is a closed, code-owned mapping, not a separately configured value. An optional fallback provider — built through the same construction path as the primary — is invoked only once the primary's own retry budget is exhausted, bounded by its own independent timeout. A second, simpler contract (`Summarize`) produces the notification hook's summary sentence — a plain prompt in, a plain string out, no vocabulary to validate, no retry loop (TDD 6.9); the session provider's sink offers its verdict and summary tools mutually exclusively per turn, switching which one is advertised before each call rather than exposing both at once (TDD 6.10). Kiro CLI is the MVP session harness; Ollama is the MVP one-shot backend. Before creating a fresh session harness, sweeps and kills any pre-existing `GSB-Harvester-*` tmux session older than a generous age floor (TDD 6.7a) — a backstop against a prior run's harness surviving a hard process kill that skipped its own cleanup. |
 | `store` | Owns the YAML source of truth: read, validate, merge (preserving operator-set state), and write `!pr` and `!issue` documents, preserving unrecognized tags verbatim. |
 | `render` | Pure function from the store to the Markdown status document; owns the layout that reproduces the established structure and the issues sections appended below it. |
-| `notify` | Owns the notification hook: collects the open PRs/issues that reached the provider for a fresh judgment this run, asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
+| `notify` | Owns the notification hook: collects the PRs/issues whose bucket this run differs from their prior stored bucket (any transition, including into or out of merged/closed/stale), asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
 | `schedule` | Platform seam for unattended execution (launchd/cron artifacts) and for resolving the host's conventional per-user data directory; isolated so the core carries no OS-specific dependency. |
 
 ## Concurrency model

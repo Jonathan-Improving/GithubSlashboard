@@ -6,9 +6,10 @@
 #   export GSB_NOTIFY_HOOK="/path/to/notify-desktop.sh"
 #
 # GithubSlashboard writes the JSON payload to this script's stdin after any
-# run in which at least one open PR or issue needed a fresh judgment. Nothing
-# is invoked otherwise — an unset GSB_NOTIFY_HOOK, or a run where nothing
-# changed, means this script never runs.
+# run in which at least one PR or issue transitioned to a different bucket
+# than it had before (a merge, a close, going stale, or coming back from
+# stale). Nothing is invoked otherwise — an unset GSB_NOTIFY_HOOK, or a run
+# where no bucket changed, means this script never runs.
 #
 # Requires exactly one of:
 #   - macOS: terminal-notifier (brew install terminal-notifier)

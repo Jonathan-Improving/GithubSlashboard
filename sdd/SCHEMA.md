@@ -488,16 +488,18 @@ The hook exists to prompt the operator to look at the status document, not to
 replace it — the payload carries only what changed and one human-readable line,
 not a full diff or the item's history.
 
-**Scope**: only open PRs and open issues can appear in `changed`. A merged,
-closed, or stale item is a settled fact the operator is not expected to act on
-further, so it never triggers the hook even though its floor-note call also
-touches the provider — that call is not a judgment about whether anything
-*changed* (TDD 4.13's fingerprint concept has no floor/stale equivalent), and a
-settled item newly relaying its own settledness on every run is not news
-(TDD 9.2).
+**Scope**: any PR or issue whose bucket this run differs from its prior stored
+bucket can appear in `changed` — including a transition into or out of merged,
+closed, or stale (Open→Merged, Open→Closed, Open→Stale, and Stale→Open are all
+notification-worthy; TDD 9.2). An item whose bucket did not change never
+appears, even when its floor-note call touched the provider this run — that
+call alone is not a judgment about whether anything *changed* (TDD 4.13's
+fingerprint concept has no floor/stale equivalent), and re-confirming an
+already-settled bucket is not news. A first-seen item (no prior stored record)
+never appears either, since there is nothing for it to have transitioned from.
 
 **Firing condition**: the hook is invoked only when `changed` is non-empty. A
-run where every item was carried forward unchanged produces no notification —
+run where every item's bucket stayed the same produces no notification —
 silence is the expected common case at a 20-minute cadence, not an error
 (TDD 9.1).
 
@@ -541,7 +543,7 @@ sanitizing whatever the provider ultimately returns on the way out.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `summary` | `string` | yes | One short, model-generated sentence summarizing everything in `changed`, sized for a desktop notification toast rather than the document — a distinct provider call from per-item classification, since no single item's companion note is written with "synthesize across N items" in mind. |
-| `changed` | `change[]` | yes | Every open PR/issue that required a fresh judgment this run, in the order classification produced them. Never empty — the hook is not invoked otherwise. |
+| `changed` | `change[]` | yes | Every PR/issue whose bucket this run differs from its prior stored bucket — any transition, including into or out of merged/closed/stale — in the order classification produced them. Never empty — the hook is not invoked otherwise. |
 
 ### `change`
 

@@ -75,16 +75,41 @@ func (c *Classifier) ClassifyAll(ctx context.Context, prs []model.PR) []model.PR
 }
 
 // classifyOne classifies a single PR. Deterministic floors are applied first
-// and are never overridden by provider output.
+// and are never overridden by provider output. WasJudged is then set centrally
+// from the one signal that actually matters for the notification hook: whether
+// this run's bucket differs from the prior stored bucket (TDD 9.2) — computed
+// here, once, after every dispatch path has already run its own bucket logic,
+// rather than duplicated in each path, so a future branch can never forget to
+// set it correctly.
 func (c *Classifier) classifyOne(ctx context.Context, pr model.PR) model.PR {
+	priorBucket, hadPrior := c.priorBucket(pr.Key())
+
+	var out model.PR
 	switch pr.GitHubState {
 	case model.GitHubStateMerged:
-		return c.classifyMerged(ctx, pr)
+		out = c.classifyMerged(ctx, pr)
 	case model.GitHubStateClosed:
-		return c.classifyClosed(ctx, pr)
+		out = c.classifyClosed(ctx, pr)
 	default:
-		return c.classifyOpen(ctx, pr)
+		out = c.classifyOpen(ctx, pr)
 	}
+
+	// A first-seen PR (no prior record at all) is not a "transition" — there is
+	// nothing to have transitioned from, and TDD 9.1's existing first-seen
+	// handling already covers a brand-new open PR. Bucket changing to itself
+	// (the common case: nothing moved) never notifies either.
+	out.WasJudged = hadPrior && out.Bucket != priorBucket
+	return out
+}
+
+// priorBucket returns the prior stored bucket for key, and whether a prior
+// record existed at all.
+func (c *Classifier) priorBucket(key string) (model.Bucket, bool) {
+	old, ok := c.prior[key]
+	if !ok {
+		return "", false
+	}
+	return old.Bucket, true
 }
 
 // classifyMerged applies the immutable merged floor (TDD 4.1). Merged supersedes
@@ -226,11 +251,10 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// re-stamped (TDD 6.16) — obvious once stated: this row's Provider
 		// value has not changed just because the run happened to execute.
 		pr.Provider = old.Provider
-		// Carried forward unchanged: this run never reached the provider for
-		// this PR, so it is not part of the notification hook's change set
-		// (TDD 9.1). WasJudged already defaults false; left unset here for
-		// clarity rather than relying solely on the zero value.
-		pr.WasJudged = false
+		// WasJudged is computed centrally in classifyOne from the prior/fresh
+		// bucket comparison (TDD 9.2) — this carried-forward bucket is
+		// identical to the prior stored one by construction, so that
+		// comparison will correctly find no transition here.
 		return pr
 	}
 
@@ -276,11 +300,10 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// 4.14), and old.Unverified is already checked above regardless — but
 		// leaving the field empty makes the intent explicit rather than relying
 		// solely on the Unverified guard.
-		// The provider WAS reached this run (that is what produced the
-		// unverified result), so this still counts as "changed" for the
-		// notification hook (TDD 9.1) — its inputs moved enough to warrant an
-		// attempt, even though the attempt did not yield a usable verdict.
-		pr.WasJudged = true
+		// WasJudged is computed centrally in classifyOne from the prior/fresh
+		// bucket comparison (TDD 9.2) — an unverified PR that stays open (the
+		// common case) is not a transition and correctly does not notify, even
+		// though the provider was reached; only an actual bucket change does.
 		return pr
 	}
 
@@ -384,11 +407,10 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// Stamp the fingerprint of the inputs that produced this judgment, so a
 	// later run can detect "unchanged" and skip the provider call (TDD 4.13).
 	pr.InputFingerprint = fp
-	// The provider was reached, but only an open-bucket outcome counts as
-	// "changed" for the notification hook (TDD 9.2) — a PR that landed in
-	// Stale this run is a settled fact the operator is not expected to act on
-	// further, even though classification consulted the provider to get there.
-	pr.WasJudged = pr.Bucket == model.BucketOpen
+	// WasJudged is computed centrally in classifyOne from the prior/fresh
+	// bucket comparison (TDD 9.2) — landing in Stale this run DOES notify when
+	// it is a genuine transition from Open (the operator wants to know a PR
+	// just went quiet), unlike the narrower open-only rule this used to be.
 	return pr
 }
 

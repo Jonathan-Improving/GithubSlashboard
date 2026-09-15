@@ -64,9 +64,11 @@ const (
 )
 
 // ChangesFromPRs returns the Change entries for every PR whose WasJudged flag
-// is set (TDD 9.1, 9.2) — a first-seen, changed, or previously-unverified open
-// PR. A carried-forward-unchanged PR, and any merged/closed/stale PR, never
-// appears here (WasJudged is false for both, by construction in classify).
+// is set (TDD 9.1, 9.2) — a PR whose bucket this run differs from its prior
+// stored bucket, including a transition into or out of merged, closed, or
+// stale (any transition is notification-worthy). A PR whose bucket did not
+// change, and a first-seen PR with no prior record to compare against, never
+// appear here (WasJudged is false for both, by construction in classify).
 func ChangesFromPRs(prs []model.PR) []Change {
 	var out []Change
 	for _, p := range prs {

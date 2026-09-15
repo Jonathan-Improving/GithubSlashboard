@@ -848,26 +848,40 @@ and an issue with no conversation is never sent to the model.
 
 ## 9. Notification hook
 
-### 9.1 A hook fires only when something actually needed judging
-- **Given** a completed classification pass over open PRs and issues
+### 9.1 A hook fires only on an actual bucket transition
+- **Given** a completed classification pass over PRs and issues, each compared
+  against its own prior stored bucket (the store as read at the start of this
+  run, before this run's own classification touches it)
 - **When** the tool determines whether to notify
-- **Then** it collects exactly the open items that reached the provider this run
-  — first-seen, changed (4.13, 8.8), or previously unverified — and fires the
-  hook only when that set is non-empty
-- **And** an item carried forward unchanged never appears in the set, and a run
-  where every item was unchanged produces no notification at all
-- **Note** this reuses the same population the fingerprint skip already
-  distinguishes; no second change-detection mechanism is introduced
+- **Then** it collects exactly the items whose bucket this run differs from
+  their prior stored bucket, and fires the hook only when that set is
+  non-empty
+- **And** an item whose bucket did not change never appears in the set, even
+  when the provider was freshly consulted to confirm it (an open PR re-judged
+  into the same open bucket, or an unverified judgment that still leaves the
+  bucket where it was) — a fresh judgment alone is not what matters here, only
+  whether the disposition actually moved
+- **And** a first-seen item (no prior stored record at all) never appears in
+  the set either — there is nothing for it to have transitioned from
+- **Note** this reversed the original, narrower design (open-bucket-outcomes
+  only): a live PR merged during a run and never appeared in a single
+  notification, traced to `WasJudged` being hardcoded to `bucket == open`
+  regardless of whether a real, fresh judgment had just produced a genuine
+  Open→Merged transition (ANTI-PATTERNS #12)
 
-### 9.2 Merged, closed, and stale items never trigger the hook
-- **Given** a PR that merged or closed, or any item (PR or issue) that aged or
-  was judged into the stale bucket this run
+### 9.2 Every bucket transition is notification-worthy, including into and out of settled states
+- **Given** an item whose bucket changed this run — Open→Merged, Open→Closed,
+  Open→Stale, or Stale→Open — for either a PR or an issue, treated identically
 - **When** the tool determines whether to notify
-- **Then** that item never appears in the hook's payload, even though its floor
-  note may have consulted the provider this run (TDD 4.1, 4.2, 8.2)
-- **Note** a settled item is not something the operator is expected to act on
-  further; the fingerprint concept (9.1) has no floor/stale equivalent, and a
-  terminal item's own floor-note call is not a "change" in that sense
+- **Then** that item appears in the hook's payload; none of these transitions
+  are excluded
+- **Note** this replaces the original design, which excluded merged, closed,
+  and stale outcomes on the reasoning that "a settled item is not something
+  the operator is expected to act on further." The operator's own stated
+  intent is broader: an Open→Merged or Open→Closed transition is exactly the
+  kind of update worth a notification, Open→Stale tells the operator a PR
+  just went quiet, and Stale→Open means someone finally touched a PR the
+  operator had written off — all four are meaningful state changes, not noise
 
 ### 9.3 The hook payload carries the new state, not a diff
 - **Given** a non-empty set of changed items (9.1)

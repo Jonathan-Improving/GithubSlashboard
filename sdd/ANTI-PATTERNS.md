@@ -17,6 +17,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 9 | Free-text model output extracted with only TrimSpace, no thinking-trace guard | Medium |
 | 10 | A killed (not returned) process orphans its tmux harness session | Medium |
 | 11 | A timed-out GitHub search returns 200 with a silently partial result set | Medium |
+| 12 | A narrower-than-intended notification rule shipped as if it were the full design | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -370,6 +371,68 @@ it, and the later `reviewed-by:` search (which does regularly return it,
 since the operator has left review comments on their own PR) inserted it
 fresh as `reviewer`. Every function behaved exactly as its own logic says it
 should; the actual input just was not what every other run's input happens to
+
+## 12. A narrower-than-intended notification rule shipped as if it were the full design
+
+**Symptom**: The operator reported "the hook is working, but I never got a
+notification when a PR merged this afternoon." The hook's mechanism (GSB
+firing it, SSH, `notify-send`, D-Bus session routing) all tested out fine live
+— two manual test notifications delivered successfully during the
+investigation. The actual PR's own record showed a fresh, correct merged-floor
+judgment (`merged_at` inside the reported window), and the run's classify
+phase completed in under half a millisecond — too fast to have called the
+provider even once for 130 PRs, let alone produced the note this newly-merged
+PR now carried, which was itself proof a fresh judgment DID happen.
+
+**What was tried**: Verified the delivery pipeline end to end first (SSH
+reachability, `notify-send` manually, `DBUS_SESSION_BUS_ADDRESS` on the remote
+host) before suspecting GSB's own code, since the operator explicitly said
+"the hook" was the suspect. Only after every external link checked out
+correctly did the investigation turn to `classify.go`, where `WasJudged`'s
+assignment (`pr.Bucket == model.BucketOpen`) was found unconditionally false
+for any merged/closed outcome — a hardcoded rule, not a coding slip, matching
+a rubric (old TDD 9.2) that documented it as a deliberate choice with a stated
+rationale: "a settled item is not something the operator is expected to act on
+further."
+
+**Root cause**: The original design's rationale was reasonable in isolation,
+but it was never actually validated against what the operator wanted
+end-to-end — it shipped, got documented as intentional, and then sat
+unquestioned for weeks because nothing about it looks like a bug: no error, no
+log line, a fully green test suite (which had zero tests on `WasJudged` at
+all, a second, compounding gap). The operator's real expectation only surfaced
+when a live merge produced silence they noticed and asked about.
+
+**Resolution**: Rebuilt `WasJudged` around a fundamentally different question
+— not "did the provider run and land on open" but "does this run's bucket
+differ from the prior stored bucket" — computed once, centrally, in
+`classifyOne`/`classifyIssue` right after their dispatch switch, rather than
+scattered per-branch (the original scattering is exactly what let three
+different branches each get their own slightly-different, all-wrong rule).
+Confirmed the intended scope explicitly with the operator before
+implementing: every transition (Open→Merged, Open→Closed, Open→Stale,
+Stale→Open) now notifies, for both PRs and issues identically; a same-bucket
+re-judgment and a first-seen item still do not.
+
+**Lesson**: A design decision documented with a plausible-sounding rationale
+is not the same as a design decision the operator actually agreed to — "the
+operator is not expected to act on a settled item further" turned out to be
+someone's (the agent's) assumption about what the operator wants, presented
+with enough confidence in the rubric's prose that it read as settled. When a
+rule's entire justification is an inference about user intent rather than
+something the user stated, that inference needs to be checked against reality
+before it hardens into "the design," and it needs an actual test — not just a
+comment — proving the rule does what the comment claims, so a change to it
+later doesn't silently regress in one branch while getting fixed in another.
+
+**Cost**: Live in production for an unknown number of merges/closures/stale
+transitions before the operator happened to notice one specific silence and
+ask about it — every prior transition of this kind produced no notification
+and left no trace distinguishing "correctly quiet" from "silently swallowed."
+Severity: Medium (the underlying classification and store were never wrong —
+only the best-effort notification's trigger rule was too narrow, and the fix
+required an explicit product conversation, not just a code read, to get
+right).
 be.
 
 **Resolution**: Check `IncompleteResults` on every page of both search
