@@ -30,7 +30,7 @@ func sample() []model.PR {
 }
 
 func TestSummaryRoleBased(t *testing.T) {
-	md := Render(sample(), nil, "2026-08-26 14:00:00 PDT", refNow)
+	md := Render(sample(), nil, nil, "2026-08-26 14:00:00 PDT", refNow)
 	// Role-based summary: Submitter has 1 open + 1 merged; Reviewer 1 open + 1 closed.
 	for _, want := range []string{
 		"| Role | 🟢 Open | 🟡 Stale | ✅ Merged | 🔴 Closed | Total |",
@@ -44,7 +44,7 @@ func TestSummaryRoleBased(t *testing.T) {
 }
 
 func TestSubmitterSectionsAndColumns(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	for _, want := range []string{
 		"# Submitter: PRs I Authored",
 		"## 💡 Open (1)",
@@ -81,7 +81,7 @@ func TestActionNeededMarkers(t *testing.T) {
 			prs := []model.PR{{Repo: "a/x", Number: 1, Title: "Alpha", URL: "u1", Role: model.RoleSubmitter,
 				Created: created, Bucket: model.BucketOpen, Action: tc.action,
 				Priority: model.PriorityNeutral, Companion: "note"}}
-			md := Render(prs, nil, "x", refNow)
+			md := Render(prs, nil, nil, "x", refNow)
 			if !strings.Contains(md, tc.want+" note") {
 				t.Errorf("action %s: expected marker %q\n%s", tc.action, tc.want, md)
 			}
@@ -90,7 +90,7 @@ func TestActionNeededMarkers(t *testing.T) {
 }
 
 func TestReviewerBallHoldingAndDone(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	for _, want := range []string{
 		"# Reviewer: PRs I Reviewed",
 		"## Awaiting Our Action (1)", // reviewer open awaiting_review -> ball with us
@@ -111,7 +111,7 @@ func TestReviewerMergedOutcome(t *testing.T) {
 	merged := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
 	prs := []model.PR{{Repo: "r/z", Number: 9, Title: "M", URL: "u", Role: model.RoleReviewer,
 		Bucket: model.BucketMerged, MergedAt: &merged, Priority: model.PriorityNeutral}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, outcomeMerged) {
 		t.Errorf("reviewer merged PR should show %q\n%s", outcomeMerged, md)
 	}
@@ -125,7 +125,7 @@ func TestAwaitingActionEmojiPrecedence(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 8, Title: "T", URL: "u", Role: model.RoleReviewer, Created: created,
 		Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
 		Priority: model.PriorityNeutral, Companion: "needs our review", Emoji: "👀"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, "👀 needs our review") {
 		t.Errorf("inferred emoji should lead the awaiting cell:\n%s", md)
 	}
@@ -143,7 +143,7 @@ func TestActionNeededEmojiPrecedence(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 295, Title: "T", URL: "u", Role: model.RoleSubmitter, Created: created,
 		Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
 		Priority: model.PriorityNeutral, Companion: "awaiting final blessing", Emoji: "⏳"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if strings.Contains(md, markPending+" "+markPending) {
 		t.Errorf("doubled structural+inferred glyph in action-needed cell:\n%s", md)
 	}
@@ -159,7 +159,7 @@ func TestActionNeededStructuralMarkerWithoutEmoji(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 9, Title: "T", URL: "u", Role: model.RoleSubmitter, Created: created,
 		Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
 		Priority: model.PriorityNeutral, Companion: "waiting on review"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, markPending+" waiting on review") {
 		t.Errorf("structural marker should lead when no emoji was inferred:\n%s", md)
 	}
@@ -171,7 +171,7 @@ func TestActionNeededConflictPrefixSurvivesEmoji(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 10, Title: "T", URL: "u", Role: model.RoleSubmitter, Created: created,
 		Bucket: model.BucketOpen, Action: model.ActionConflicted,
 		Priority: model.PriorityNeutral, Companion: "rebase needed", Emoji: "🔧"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, "🔧 merge conflict — rebase needed") {
 		t.Errorf("conflict prefix should survive under an inferred emoji:\n%s", md)
 	}
@@ -188,14 +188,14 @@ func TestReviewFeedbackCellSignalsAuthorMustAct(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 295, Title: "T", URL: "u", Role: model.RoleSubmitter, Created: created,
 		Bucket: model.BucketOpen, Action: model.ActionReviewFeedback,
 		Priority: model.PriorityNeutral, Companion: "conditionally approved", Emoji: "⏳"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, "unresolved review feedback — conditionally approved") {
 		t.Errorf("cell should state the outstanding feedback:\n%s", md)
 	}
 	// Without an inferred emoji the structural marker must be the
 	// back-and-forth one, never the pending-on-others ⏳.
 	prs[0].Emoji = ""
-	md = Render(prs, nil, "x", refNow)
+	md = Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, markBackForth+" unresolved review feedback") {
 		t.Errorf("review_feedback should use the back-and-forth marker:\n%s", md)
 	}
@@ -222,7 +222,7 @@ func TestTerminalBucketsSortNewestFirst(t *testing.T) {
 		{Repo: "r/z", Number: 30, Title: "Middle merge", URL: "u30", Role: model.RoleSubmitter,
 			Bucket: model.BucketMerged, MergedAt: &middle, Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNewest := strings.Index(md, "Newest merge")
 	iMiddle := strings.Index(md, "Middle merge")
@@ -249,7 +249,7 @@ func TestReviewerDoneSortsMergedAndClosedTogetherByDate(t *testing.T) {
 		{Repo: "r/z", Number: 2, Title: "New merged", URL: "u2", Role: model.RoleReviewer,
 			Bucket: model.BucketMerged, MergedAt: &newer, Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNew := strings.Index(md, "New merged")
 	iOld := strings.Index(md, "Old closed")
@@ -273,7 +273,7 @@ func TestTerminalSortElevatedFirstThenDate(t *testing.T) {
 		{Repo: "r/z", Number: 2, Title: "Elevated older", URL: "u2", Role: model.RoleSubmitter,
 			Bucket: model.BucketClosed, ClosedAt: &older, Priority: model.PriorityElevated},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iElevated := strings.Index(md, "Elevated older")
 	iNeutral := strings.Index(md, "Neutral newer")
@@ -296,7 +296,7 @@ func TestTerminalSortFallsBackToRepoNumberOnTie(t *testing.T) {
 		{Repo: "r/z", Number: 10, Title: "Earlier number", URL: "u10", Role: model.RoleSubmitter,
 			Bucket: model.BucketClosed, ClosedAt: &same, Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iEarlier := strings.Index(md, "Earlier number")
 	iLater := strings.Index(md, "Later number")
@@ -324,7 +324,7 @@ func TestReviewSubmittedSortsByLastActivity(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
 			Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -350,7 +350,7 @@ func TestReviewSubmittedElevatedFirstThenActivity(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
 			Priority: model.PriorityElevated},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iElevated := strings.Index(md, "Elevated older")
 	iNeutral := strings.Index(md, "Neutral newer")
@@ -374,7 +374,7 @@ func TestReviewSubmittedFallsBackToRepoNumberOnTie(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: same,
 			Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iEarlier := strings.Index(md, "Earlier number")
 	iLater := strings.Index(md, "Later number")
@@ -402,7 +402,7 @@ func TestAwaitingActionSortsByLastActivity(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: older,
 			Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -428,7 +428,7 @@ func TestSubmitterOpenSortsByLastActivity(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, LastActivity: older,
 			Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -458,7 +458,7 @@ func TestSubmitterOpenElevatedLeadsDespiteOlderActivity(t *testing.T) {
 			Bucket: model.BucketOpen, Action: model.ActionBlockedExternal, LastActivity: olderElevated,
 			Priority: model.PriorityElevated},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iElevated := strings.Index(md, "Elevated touched 2 days ago")
 	iNeutral := strings.Index(md, "Neutral touched today")
@@ -482,7 +482,7 @@ func TestSubmitterStaleSortsByLastActivity(t *testing.T) {
 		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleSubmitter,
 			Bucket: model.BucketStale, LastActivity: older, Priority: model.PriorityNeutral},
 	}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -499,7 +499,7 @@ func TestDoneOutcomeSubReasonFormat(t *testing.T) {
 	prs := []model.PR{{Repo: "r/z", Number: 9, Title: "T", URL: "u", Role: model.RoleReviewer,
 		Bucket: model.BucketClosed, CloseReason: model.CloseReasonCancelled, ClosedAt: &closed,
 		Priority: model.PriorityNeutral, Companion: "dropped by author", Emoji: "🗑️"}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, outcomeClosed+" / 🗑️ cancelled") {
 		t.Errorf("outcome should be 'PRIMARY / <emoji> sub-reason':\n%s", md)
 	}
@@ -509,7 +509,7 @@ func TestDoneOutcomeSubReasonFormat(t *testing.T) {
 }
 
 func TestNoteCellsCarryEmoji(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	for _, want := range []string{
 		"🔧 mitigating QA findings", // submitter Open Action Needed
 		"📦 shipped last week",      // submitter Merged Notes
@@ -523,7 +523,7 @@ func TestNoteCellsCarryEmoji(t *testing.T) {
 }
 
 func TestRoleSectionsSeparatedByRule(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	sub := strings.Index(md, "# Submitter: PRs I Authored")
 	rule := strings.Index(md, "\n---\n")
 	rev := strings.Index(md, "# Reviewer: PRs I Reviewed")
@@ -536,7 +536,7 @@ func TestRoleSectionsSeparatedByRule(t *testing.T) {
 }
 
 func TestGeneratedNoticePresent(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	if !strings.Contains(md, generatedNotice) {
 		t.Errorf("generated-file notice missing:\n%s", md)
 	}
@@ -550,22 +550,22 @@ func TestGeneratedNoticePresent(t *testing.T) {
 
 func TestLastUpdatedVerbatim(t *testing.T) {
 	stamp := "SOME EXACT STAMP 123"
-	md := Render(sample(), nil, stamp, refNow)
+	md := Render(sample(), nil, nil, stamp, refNow)
 	if !strings.Contains(md, "_Last Updated: "+stamp+"_") {
 		t.Errorf("Last Updated not verbatim (TDD 3.4)")
 	}
 }
 
 func TestElevatedVisible(t *testing.T) {
-	md := Render(sample(), nil, "x", refNow)
+	md := Render(sample(), nil, nil, "x", refNow)
 	if !strings.Contains(md, strings.TrimSpace(elevatedMarker)) {
 		t.Errorf("elevated priority not distinguished (TDD 3.5)")
 	}
 }
 
 func TestPureFunctionExceptTimestamp(t *testing.T) {
-	a := Render(sample(), nil, "STAMP-A", refNow)
-	b := Render(sample(), nil, "STAMP-B", refNow)
+	a := Render(sample(), nil, nil, "STAMP-A", refNow)
+	b := Render(sample(), nil, nil, "STAMP-B", refNow)
 	na := strings.Replace(a, "STAMP-A", "X", 1)
 	nb := strings.Replace(b, "STAMP-B", "X", 1)
 	if na != nb {
@@ -577,7 +577,7 @@ func TestUnverifiedMarked(t *testing.T) {
 	prs := []model.PR{{Repo: "a/x", Number: 1, Title: "T", URL: "u", Role: model.RoleSubmitter,
 		Bucket: model.BucketOpen, Action: model.ActionAwaitingReview,
 		Priority: model.PriorityNeutral, Unverified: true}}
-	md := Render(prs, nil, "x", refNow)
+	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, "unverified") {
 		t.Errorf("unverified row not marked:\n%s", md)
 	}

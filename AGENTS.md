@@ -32,9 +32,9 @@ Read these files first:
 
 Read all of the above, plus:
 - `sdd/TECH.md` — Technical architecture, dependencies, and module responsibilities
-- `sdd/SCHEMA.md` — The exact contracts: the `!pr` and `!issue` YAML document
-  shapes and the provider request/response structure. Read it before touching the
-  store, the renderer, or the provider hand-off.
+- `sdd/SCHEMA.md` — The exact contracts: the `!pr`, `!issue`, and `!pinned-pr`
+  YAML document shapes and the provider request/response structure. Read it
+  before touching the store, the renderer, or the provider hand-off.
 - `sdd/ANTI-PATTERNS.md` — Costly traps already hit and resolved (scan its TOC;
   read only entries whose titles match your task). Check it before working on the
   session provider, the terminal/harness interaction, or the unattended write path.

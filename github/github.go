@@ -7,7 +7,9 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -63,7 +65,14 @@ func (c *Client) Login() string { return c.login }
 // change, so the prior record is carried forward verbatim and no per-PR GitHub
 // calls are spent on it (TDD 1.5). When true, every discovered PR is crawled
 // afresh regardless of its stored state (a deliberate deep run).
-func (c *Client) FetchTracked(ctx context.Context, prior map[string]model.PR, includeTerminal bool) ([]model.PR, error) {
+//
+// pins are the operator's standing pin instructions. After the search-derived
+// set is assembled, each pin is applied (decisions P.1–P.3): a pinned PR the
+// searches already found has its role forced to the pinned value (pin wins,
+// logged when it changes a discovered role), and a pinned PR no search returned
+// is fetched and added under its pinned role. A pin whose PR 404s is logged and
+// skipped, never fatal (P.7). log carries these decisions; it must be non-nil.
+func (c *Client) FetchTracked(ctx context.Context, prior map[string]model.PR, includeTerminal bool, pins []model.PinnedPR, log *slog.Logger) ([]model.PR, error) {
 	authored, err := c.searchPRs(ctx, fmt.Sprintf("is:pr author:%s", c.login), model.RoleSubmitter)
 	if err != nil {
 		return nil, fmt.Errorf("fetch authored PRs: %w", err)
@@ -144,7 +153,88 @@ func (c *Client) FetchTracked(ctx context.Context, prior map[string]model.PR, in
 		}
 		out = append(out, *p)
 	}
+
+	return c.applyPins(ctx, out, prior, includeTerminal, pins, log)
+}
+
+// applyPins force-applies each operator pin onto the search-derived set. Role is
+// decided in this one place, after the search-merge and its incomplete-results
+// abort have already run on the search set (P.2 note): for a PR a search also
+// found (Case A) the pinned role is stamped over the discovered one and the
+// override logged when it actually changes the role; for a PR no search found
+// (Case B) the PR is fetched and added under its pinned role. A pin whose PR
+// 404s is logged and skipped, not fatal (P.7). The pinned role is (re-)stamped
+// regardless of whether the matching record was freshly crawled or carried
+// forward as terminal, so the pin — not the carried !pr — is the source of
+// truth for role every run (P.3).
+func (c *Client) applyPins(ctx context.Context, out []model.PR, prior map[string]model.PR, includeTerminal bool, pins []model.PinnedPR, log *slog.Logger) ([]model.PR, error) {
+	if len(pins) == 0 {
+		return out, nil
+	}
+
+	index := make(map[string]int, len(out))
+	for i := range out {
+		index[out[i].Key()] = i
+	}
+
+	for _, pin := range pins {
+		if i, ok := index[pin.Key()]; ok {
+			// Case A: already in the set from a search (or a carried terminal
+			// record). Force the role, logging only when it changes what a
+			// search discovered so the override is never silent (P.2).
+			if out[i].Role != pin.Role {
+				log.Info("pin override: forcing role",
+					"pr", pin.Key(), "discovered_role", out[i].Role, "pinned_role", pin.Role)
+				out[i].Role = pin.Role
+			}
+			continue
+		}
+
+		// Case B: no search returned this PR — fetch and add it under the
+		// pinned role. A carried terminal record would already be in prior and
+		// in out; a pin for a terminal PR not in the search set still needs a
+		// fetch here unless prior holds it as terminal and terminal-skip is on.
+		if !includeTerminal {
+			if old, ok := prior[pin.Key()]; ok && (old.Bucket == model.BucketMerged || old.Bucket == model.BucketClosed) {
+				carried := old
+				carried.Role = pin.Role
+				if carried.Bucket == model.BucketMerged {
+					carried.GitHubState = model.GitHubStateMerged
+				} else {
+					carried.GitHubState = model.GitHubStateClosed
+				}
+				out = append(out, carried)
+				index[pin.Key()] = len(out) - 1
+				continue
+			}
+		}
+
+		p := model.PR{Repo: pin.Repo, Number: pin.Number, Role: pin.Role}
+		if err := c.attachEventTrail(ctx, &p); err != nil {
+			if isNotFound(err) {
+				// A typo'd or deleted pin must not take down the unattended
+				// dashboard: log loudly, skip, leave the pin in place (P.7).
+				log.Warn("pin skipped: PR not found on GitHub (fix the pin or --unpin it)",
+					"pr", pin.Key(), "err", err)
+				continue
+			}
+			return nil, fmt.Errorf("assemble event trail for pinned %s: %w", pin.Key(), err)
+		}
+		out = append(out, p)
+		index[pin.Key()] = len(out) - 1
+	}
+
 	return out, nil
+}
+
+// isNotFound reports whether err is (or wraps) a GitHub 404 — the signal that a
+// pinned PR was typo'd or deleted, which is skipped rather than fatal (P.7).
+func isNotFound(err error) bool {
+	var ge *gh.ErrorResponse
+	if errors.As(err, &ge) {
+		return ge.Response != nil && ge.Response.StatusCode == http.StatusNotFound
+	}
+	return false
 }
 
 // searchPRs runs a read-only issue search and maps each result into a base PR
@@ -255,6 +345,20 @@ func (c *Client) attachEventTrail(ctx context.Context, p *model.PR) error {
 	pull, _, err := c.rest.PullRequests.Get(ctx, owner, name, p.Number)
 	if err != nil {
 		return fmt.Errorf("get PR: %w", err)
+	}
+	// Backfill identifying fields a search result would normally supply. A
+	// pinned PR that no search discovered (Case B) arrives here with only
+	// repo/number/role set, so populate title, URL, and created date from the
+	// authoritative PR resource. For a search-derived PR these are already set
+	// and left untouched.
+	if p.Title == "" {
+		p.Title = pull.GetTitle()
+	}
+	if p.URL == "" {
+		p.URL = pull.GetHTMLURL()
+	}
+	if p.Created.IsZero() {
+		p.Created = pull.GetCreatedAt().Time
 	}
 	if pull.GetMerged() {
 		p.GitHubState = model.GitHubStateMerged

@@ -177,10 +177,12 @@ requires a reason on a closed row.
 ## YAML store
 
 The source of truth is one YAML file containing a stream of documents, each tagged
-with its entity type. Pull requests are tagged `!pr` and issues `!issue`; the tag
-is the extension point that lets further entity types be added later without
-restructuring existing data, and a document whose tag this build does not
-recognize is round-tripped verbatim rather than dropped (TDD 2.5).
+with its entity type. Pull requests are tagged `!pr` and issues `!issue`, and an
+operator pin (an explicit tracking instruction, § `!pinned-pr` document below) is
+tagged `!pinned-pr`; the tag is the extension point that lets further entity
+types be added later without restructuring existing data, and a document whose
+tag this build does not recognize is round-tripped verbatim rather than dropped
+(TDD 2.5).
 
 ### `!pr` document
 
@@ -287,6 +289,57 @@ action: triage
 priority: neutral
 provider: primary
 ```
+
+### `!pinned-pr` document
+
+An operator pin: a standing instruction to track a specific PR under a chosen
+role, whether or not any GitHub search discovers it (TDD P.1). It is a distinct
+document from the `!pr` it produces — the pin carries only the operator's intent
+and persists independently, so unpinning removes the intent without disturbing
+the derived record, and a not-yet-crawled pin never renders a blank `!pr`. It is
+added or removed only by the `--pin`/`--unpin` CLI (§ CLI store mutations below),
+never by the pipeline, which reads pins but does not write them.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `repo` | `string` | yes | `owner/name` of the repository. |
+| `number` | `int` | yes | PR number within the repo. |
+| `role` | `role` | yes | The role the PR is tracked under: `submitter` or `reviewer`. It reuses the `!pr` role vocabulary — a pin's role is exactly the role its resulting `!pr` carries. On conflict with a search-discovered role, the pin wins (TDD P.2). |
+
+The pin holds no derived state at all — no title, bucket, or judgment. Those
+live on the `!pr` record the pin produces, which is written, judged, and settled
+by the normal pipeline exactly as for a search-discovered PR (TDD P.3).
+
+**Example:**
+
+```yaml
+--- !pinned-pr
+repo: valkey-io/valkey-glide
+number: 100
+role: reviewer
+```
+
+### CLI store mutations
+
+`--pin` and `--unpin` are standalone store mutations, distinct from the
+acquire→classify→persist→render pipeline: each reads the store, edits exactly one
+`!pinned-pr` document, writes the store, and exits, making no GitHub request and
+no provider call (TDD P.4, P.5). They require no `GITHUB_TOKEN`, since they touch
+no network.
+
+| Invocation | Effect |
+|------------|--------|
+| `--pin owner/repo#N=submitter` / `=reviewer` | Add a pin for `owner/repo#N` under the given role, or update the role if a pin for it already exists. A malformed target (unparseable `owner/repo#N`, or a role outside {submitter, reviewer}) is rejected with a non-zero exit and no store write. |
+| `--unpin owner/repo#N` | Remove the pin for `owner/repo#N`, leaving every `!pr`/`!issue` untouched. Unpinning a PR with no pin is a clean no-op (idempotent). |
+
+Both the CLI mutations and the pipeline take an exclusive lock on a sibling
+lockfile (`<store>.lock`) across their whole read→write critical section, so a
+pin edit and a concurrent crawl are serialized and neither loses its write (TDD
+P.9). A CLI mutation waits (bounded) for a running pipeline to release; a
+pipeline that finds the lock held by another pipeline exits without waiting, as
+an overrun of the prior scheduled run does today. A lock orphaned by a hard kill
+is reclaimed once older than a generous age floor, so a crash cannot wedge the
+store permanently.
 
 ---
 

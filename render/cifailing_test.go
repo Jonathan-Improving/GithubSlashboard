@@ -22,7 +22,7 @@ func ciPR(action model.Action, companion, emoji string, ciFailing bool) model.PR
 
 // TestCIFailingMarkerAppears covers TDD 4.12: a flagged row is visibly marked.
 func TestCIFailingMarkerAppears(t *testing.T) {
-	md := Render([]model.PR{ciPR(model.ActionAuthorActive, "iterating on the branch", "🔧", true)}, nil, "x", issueNow)
+	md := Render([]model.PR{ciPR(model.ActionAuthorActive, "iterating on the branch", "🔧", true)}, nil, nil, "x", issueNow)
 
 	if !strings.Contains(md, markCIFailing) {
 		t.Errorf("flagged row is missing the %s marker (TDD 4.12)\n%s", markCIFailing, md)
@@ -31,7 +31,7 @@ func TestCIFailingMarkerAppears(t *testing.T) {
 
 // TestCIFailingMarkerAbsentWhenGreen proves the marker is not gratuitous.
 func TestCIFailingMarkerAbsentWhenGreen(t *testing.T) {
-	md := Render([]model.PR{ciPR(model.ActionAuthorActive, "iterating on the branch", "🔧", false)}, nil, "x", issueNow)
+	md := Render([]model.PR{ciPR(model.ActionAuthorActive, "iterating on the branch", "🔧", false)}, nil, nil, "x", issueNow)
 
 	if strings.Contains(md, markCIFailing) {
 		t.Errorf("unflagged row carries the %s marker\n%s", markCIFailing, md)
@@ -43,7 +43,7 @@ func TestCIFailingMarkerAbsentWhenGreen(t *testing.T) {
 func TestCIMarkerDoesNotShadowTheNote(t *testing.T) {
 	md := Render([]model.PR{
 		ciPR(model.ActionReviewFeedback, "reviewer asked for a rename", "🔴", true),
-	}, nil, "x", issueNow)
+	}, nil, nil, "x", issueNow)
 
 	if !strings.Contains(md, markCIFailing) {
 		t.Error("missing the CI marker")
@@ -65,7 +65,7 @@ func TestCIMarkerDoesNotShadowTheNote(t *testing.T) {
 func TestCIMarkerNotDoubledWhenModelChoseIt(t *testing.T) {
 	md := Render([]model.PR{
 		ciPR(model.ActionAuthorActive, "build broken on the new runner", markCIFailing, true),
-	}, nil, "x", issueNow)
+	}, nil, nil, "x", issueNow)
 
 	if n := strings.Count(md, markCIFailing); n != 1 {
 		t.Errorf("marker appears %d times, want exactly 1 — no doubled glyph\n%s", n, md)
@@ -76,7 +76,7 @@ func TestCIMarkerNotDoubledWhenModelChoseIt(t *testing.T) {
 func TestCIMarkerLeadsTheCell(t *testing.T) {
 	md := Render([]model.PR{
 		ciPR(model.ActionAuthorActive, "iterating on the branch", "🔧", true),
-	}, nil, "x", issueNow)
+	}, nil, nil, "x", issueNow)
 
 	ci := strings.Index(md, markCIFailing)
 	emoji := strings.Index(md, "🔧")
@@ -101,7 +101,7 @@ func TestCIFlagDoesNotMoveReviewerRows(t *testing.T) {
 		Priority: model.PriorityNeutral, Companion: "author is iterating", Emoji: "🔧",
 		CIFailing: true, // would not be set by classify; asserts render does not react
 	}
-	md := Render([]model.PR{pr}, nil, "x", issueNow)
+	md := Render([]model.PR{pr}, nil, nil, "x", issueNow)
 
 	awaitIdx := strings.Index(md, "## Awaiting Our Action")
 	submittedIdx := strings.Index(md, "Open — Review Submitted")

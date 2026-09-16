@@ -40,6 +40,12 @@ const (
 	// are orthogonal facts and neither may hide the other (TDD 4.11).
 	markCIFailing = "🚧"
 
+	// markPinned flags a row whose PR originates from an operator pin, so an
+	// explicit tracking exception is distinguishable from a naturally-discovered
+	// PR of the same role and bucket (P.8). It prefixes the PR-column link, which
+	// every PR table carries.
+	markPinned = "📌"
+
 	// Reviewer Done outcome markers.
 	outcomeMerged = "🎉 MERGED"
 	outcomeClosed = "🚪 CLOSED"
@@ -75,7 +81,16 @@ var closeReasonEmoji = map[model.CloseReason]string{
 // issues, the supplied Last Updated string (emitted verbatim, TDD 3.4), and a
 // reference time used to compute ages. The document is titled for the tool rather
 // than for PRs, since it tracks more than pull requests (TDD 8.6).
-func Render(prs []model.PR, issues []model.Issue, lastUpdated string, now time.Time) string {
+//
+// pinned is the set of operator pins; a PR whose key matches one carries the 📌
+// marker so an explicit tracking exception is visible (P.8). Issues cannot be
+// pinned, so the set applies to PR rows only.
+func Render(prs []model.PR, issues []model.Issue, pinned []model.PinnedPR, lastUpdated string, now time.Time) string {
+	pinnedKeys := make(map[string]bool, len(pinned))
+	for _, p := range pinned {
+		pinnedKeys[p.Key()] = true
+	}
+
 	var b strings.Builder
 
 	b.WriteString("# 📋 GithubSlashboard\n\n")
@@ -88,13 +103,13 @@ func Render(prs []model.PR, issues []model.Issue, lastUpdated string, now time.T
 	writeSummaryTable(&b, submitters, reviewers, issues)
 
 	b.WriteString("# Submitter: PRs I Authored\n\n")
-	writeSubmitterSection(&b, submitters, now)
+	writeSubmitterSection(&b, submitters, pinnedKeys, now)
 
 	// Horizontal rule separating the two role sections.
 	b.WriteString("---\n\n")
 
 	b.WriteString("# Reviewer: PRs I Reviewed\n\n")
-	writeReviewerSection(&b, reviewers, now)
+	writeReviewerSection(&b, reviewers, pinnedKeys, now)
 
 	// Horizontal rule separating the PR half of the document from the issues
 	// half (TDD 8.6).
@@ -157,7 +172,7 @@ func bucketCounts(prs []model.PR) (open, stale, merged, closed int) {
 
 // writeSubmitterSection emits the four mutually-exclusive submitter tables in
 // the established order: Open, Stale, Merged, Closed.
-func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
+func writeSubmitterSection(b *strings.Builder, prs []model.PR, pinnedKeys map[string]bool, now time.Time) {
 	if len(prs) == 0 {
 		b.WriteString("_No pull requests._\n\n")
 		return
@@ -175,7 +190,7 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 		b.WriteString("|------|-----|-------|---------|-----|---------|----------------|\n")
 		for _, p := range open {
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				p.Created.Format(dateLayout), age(now, p.Created),
 				updated(now, p.LastActivity), actionNeededCell(p)))
 		}
@@ -189,7 +204,7 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 		b.WriteString("|------|-----|-------|---------|-----|---------|--------|\n")
 		for _, p := range stale {
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				p.Created.Format(dateLayout), age(now, p.Created),
 				updated(now, p.LastActivity), noteCell(p)))
 		}
@@ -203,7 +218,7 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 		b.WriteString("|------|-----|-------|---------|--------|-------|\n")
 		for _, p := range merged {
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				p.Created.Format(dateLayout), dateOrDash(p.MergedAt), noteCell(p)))
 		}
 		b.WriteString("\n")
@@ -216,7 +231,7 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 		b.WriteString("|------|-----|-------|---------|--------|--------|\n")
 		for _, p := range closed {
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				p.Created.Format(dateLayout), dateOrDash(p.ClosedAt), noteCell(p)))
 		}
 		b.WriteString("\n")
@@ -226,7 +241,7 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, now time.Time) {
 // writeReviewerSection emits the reviewer tables split by ball-holding: PRs
 // awaiting our action, open PRs where our review is submitted (they hold the
 // ball), and a Done table for merged/closed PRs with an outcome.
-func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
+func writeReviewerSection(b *strings.Builder, prs []model.PR, pinnedKeys map[string]bool, now time.Time) {
 	if len(prs) == 0 {
 		b.WriteString("_No pull requests._\n\n")
 		return
@@ -271,7 +286,7 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
 				review = markPending + " Awaiting our review"
 			}
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				updated(now, p.LastActivity), review))
 		}
 		b.WriteString("\n")
@@ -284,7 +299,7 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
 		b.WriteString("|------|-----|-------|---------|------------|\n")
 		for _, p := range reviewSubmitted {
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title),
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
 				updated(now, p.LastActivity), noteCell(p)))
 		}
 		b.WriteString("\n")
@@ -312,7 +327,7 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, now time.Time) {
 				outcome = fmt.Sprintf("%s / %s", outcomeClosed, sub)
 			}
 			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p), escapePipes(p.Title), outcome, noteCell(p)))
+				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title), outcome, noteCell(p)))
 		}
 		b.WriteString("\n")
 	}
@@ -420,9 +435,16 @@ func withElevated(p model.PR, cell string) string {
 	return cell
 }
 
-// prNumLink renders the "[#N](url)" PR column used by the model.
-func prNumLink(p model.PR) string {
-	return fmt.Sprintf("[#%d](%s)", p.Number, p.URL)
+// prNumLink renders the "[#N](url)" PR column, prefixed with the 📌 marker when
+// the PR originates from an operator pin (P.8), so an explicit tracking
+// exception is distinguishable from a naturally-tracked PR of the same
+// role/bucket. The PR column appears in every PR table.
+func prNumLink(p model.PR, pinnedKeys map[string]bool) string {
+	link := fmt.Sprintf("[#%d](%s)", p.Number, p.URL)
+	if pinnedKeys[p.Key()] {
+		return markPinned + " " + link
+	}
+	return link
 }
 
 // age renders the whole-day age of a PR relative to now (e.g. "13d").

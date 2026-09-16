@@ -196,6 +196,15 @@ the combinations right. For a fact that is plumbed across every stage and fails
 silently by design, a green suite is evidence of nothing much — verify live before
 believing it, and mine each live defect for the fixture it reveals.
 
+**Recurrence (pin cycle)**: The same shape reappeared beyond deterministic facts,
+in store plumbing: writing an *empty* store — a state unreachable until `--unpin`
+could remove the last document — errored on the YAML encoder, and no unit fixture
+exercised it because no prior code path produced an empty store. A single CLI
+smoke test (`--pin` then `--unpin` to empty) surfaced it immediately. The lesson
+generalizes: any newly *reachable* state, not only a new deterministic fact,
+wants one real exercise before it is believed. Fixed with an empty-file write
+guard and a regression test.
+
 **Cost**: Two separate defects, each costing a ~5-minute live run to detect plus a
 diagnostic pass, both after a fully green suite. Each would have shipped
 undetected — Severity: Medium.
@@ -561,3 +570,45 @@ silence and asked; every within-bucket status change in that window notified
 silently-never, with no INFO-level trace. Severity: Medium (best-effort
 notification only — classification and store stayed correct — but the operator's
 core "someone is waiting on me" signal was the exact thing dropped).
+
+
+---
+
+## 14. A store edit made while a pre-lock run is in flight is silently clobbered
+
+**Symptom**: A pin added via `--pin` was confirmed present in the store (a diff
+against a backup showed exactly the one added `!pinned-pr` document, nothing
+else), the job was redeployed and kickstarted, the run finished with exit 0 —
+and the pinned PR was absent from the output. Worse, the pin document itself had
+vanished from the store, though the CLI mutation and its round-trip were both
+provably correct in isolation.
+
+**What was tried**:
+- Verified the installed binary had the pin feature and preserved a pin across a
+  read→write cycle — it did.
+- Checked the run log for the pin-override / pin-skipped lines — neither
+  appeared, and the acquire count had not grown, so the pin never reached the
+  acquisition pass.
+- Reconstructed the run timeline from the log timestamps.
+
+**Root cause**: A *scheduled* pipeline run on the **old** (pre-lock) binary was
+already in flight when the pin was added — it had read the store into memory
+before the pin existed, and it wrote its stale in-memory copy back afterward,
+overwriting the pin. The store lockfile introduced by this very feature is
+exactly what serializes a CLI edit against a concurrent run, but the in-flight
+run's binary predated the lock and so could not participate in it. The pin then
+looked lost to the next run, which read an already-clobbered store. The earlier
+backup-diff passed only because it ran *before* the in-flight run's clobbering
+write landed.
+
+**Resolution**: For this incident, re-add the edit once no run is in flight and
+the lock-aware binary is the one deployed, then kickstart — the new binary locks
+correctly and the edit is stable. The general lesson: a change that introduces a
+lock (or any new store-coordination invariant) does not take effect for a run
+that is *already executing* under the old binary. When deploying such a change,
+either confirm no run is in flight before making a coordinated store edit, or
+make the edit only after the first full cycle on the new binary has completed —
+the protection a lock provides begins with the first run that has it, not with
+the deploy. Severity: Low (one-time migration race, self-correcting once the
+lock-aware binary is live on both writers; no data beyond the single pin was at
+risk, and the store round-trip was never itself faulty).

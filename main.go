@@ -53,6 +53,8 @@ func run() int {
 		storePath       = flag.String("store", "", "path to the YAML source of truth (overrides config)")
 		outputPath      = flag.String("output", "", "path to the rendered Markdown (overrides config)")
 		includeTerminal = flag.Bool("include-terminal", false, "crawl GitHub for PRs the store already records as merged/closed (default: skip them and reuse the cached record)")
+		pin             = flag.String("pin", "", "pin a PR into tracking under a role: owner/repo#N=submitter|reviewer (store mutation only; no crawl/classify/render)")
+		unpin           = flag.String("unpin", "", "remove a pin: owner/repo#N (store mutation only)")
 	)
 	flag.Parse()
 
@@ -61,6 +63,25 @@ func run() int {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	// --pin / --unpin are standalone store mutations: read the store under the
+	// exclusive lock, add or remove exactly one !pinned-pr document, write, and
+	// exit — no GitHub crawl, no classify, no render (P.4, P.5). They are
+	// mutually exclusive, and they deliberately run before full config load: a
+	// pin edit makes no GitHub call, so it must not require GITHUB_TOKEN. The
+	// store path is resolved from the same flag > env > default precedence the
+	// pipeline uses.
+	if *pin != "" && *unpin != "" {
+		log.Error("pass at most one of --pin and --unpin")
+		return 2
+	}
+	if *pin != "" || *unpin != "" {
+		sp := resolveStorePath(*storePath)
+		if *pin != "" {
+			return runPin(sp, *pin, log)
+		}
+		return runUnpin(sp, *unpin, log)
+	}
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -119,6 +140,23 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 
+	// Acquire the store lock across this run's whole read→write critical
+	// section (decision 7), so a --pin/--unpin mutation cannot clobber a crawl's
+	// write nor vice versa. A pipeline that finds the lock already held by
+	// another pipeline — an overrun of the prior scheduled run — exits without
+	// waiting, exactly as an overlapping run is expected to today; that is a
+	// clean skip, not a failure. Released on the normal return path and, via the
+	// signal handler that cancels ctx, on graceful shutdown.
+	lock, err := store.TryAcquire(cfg.StorePath)
+	if err != nil {
+		if errors.Is(err, store.ErrLockBusy) {
+			log.Info("store locked by another run, skipping this cycle", "store", cfg.StorePath)
+			return nil
+		}
+		return fmt.Errorf("acquire store lock: %w", err)
+	}
+	defer lock.Release()
+
 	// Read the source of truth up front. Acquisition consults it to skip
 	// re-crawling PRs already recorded as terminal (TDD 1.5), and persist reuses
 	// it to merge fresh results over prior operator-set state. Reading here also
@@ -144,7 +182,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	log.Info("acquiring tracked PRs", "operator", client.Login(), "include_terminal", cfg.IncludeTerminal)
 
 	acquireStart := time.Now()
-	fetched, err := client.FetchTracked(ctx, prior, cfg.IncludeTerminal)
+	fetched, err := client.FetchTracked(ctx, prior, cfg.IncludeTerminal, existing.Pinned, log)
 	if err != nil {
 		// Acquisition failure is non-destructive (TDD 1.2): return before any
 		// store or output write.
@@ -233,7 +271,7 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	renderStart := time.Now()
 	renderNow := time.Now()
 	lastUpdated := renderNow.Format(lastUpdatedLayout)
-	md := render.Render(existing.PRs, existing.Issues, lastUpdated, renderNow)
+	md := render.Render(existing.PRs, existing.Issues, existing.Pinned, lastUpdated, renderNow)
 	if err := writeOutput(cfg.OutputPath, md, filepath.Dir(cfg.StorePath)); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}

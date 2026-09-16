@@ -50,7 +50,7 @@ func sampleIssues() []model.Issue {
 // TestIssuesSectionStructure covers TDD 8.6: the document ends with an Issues
 // section holding three sections, with the closed one split by role.
 func TestIssuesSectionStructure(t *testing.T) {
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 
 	for _, want := range []string{
 		"# 🗒 Issues",
@@ -79,7 +79,7 @@ func TestIssuesSectionStructure(t *testing.T) {
 // TestIssueTitleRenamed covers TDD 8.6: the document title reflects that more
 // than PRs are tracked.
 func TestIssueTitleRenamed(t *testing.T) {
-	md := Render(nil, nil, "x", issueNow)
+	md := Render(nil, nil, nil, "x", issueNow)
 	if !strings.HasPrefix(md, "# 📋 GithubSlashboard\n") {
 		t.Errorf("document title is not the tool name (TDD 8.6)\n%s", md[:min(80, len(md))])
 	}
@@ -92,7 +92,7 @@ func TestIssueTitleRenamed(t *testing.T) {
 // alongside PR counts, and the merged column is a dash for issues because an
 // issue cannot be merged.
 func TestSummaryCarriesIssueCounts(t *testing.T) {
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 
 	for _, want := range []string{
 		"| Author (issue) | 1 | 1 | — | 1 | 3 |",
@@ -107,7 +107,7 @@ func TestSummaryCarriesIssueCounts(t *testing.T) {
 // TestClosedIssueOnlyUnderClosed covers TDD 8.6: a closed issue appears only in
 // the Closed section.
 func TestClosedIssueOnlyUnderClosed(t *testing.T) {
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 
 	closedIdx := strings.Index(md, "## ⛔ Closed")
 	if closedIdx < 0 {
@@ -139,7 +139,7 @@ func TestClosedIssuesSortNewestFirst(t *testing.T) {
 			Created: created, ClosedAt: &newer, Bucket: model.IssueBucketClosed,
 			CloseReason: model.IssueCloseReasonCompleted, Priority: model.PriorityNeutral},
 	}
-	md := Render(nil, issues, "x", issueNow)
+	md := Render(nil, issues, nil, "x", issueNow)
 
 	iNew := strings.Index(md, "New closed")
 	iOld := strings.Index(md, "Old closed")
@@ -154,7 +154,7 @@ func TestClosedIssuesSortNewestFirst(t *testing.T) {
 func TestStaleIssueInItsOwnSection(t *testing.T) {
 	// TDD 8.6: a stale issue is archived under the Stale section, split by
 	// role, and does not appear in an active section.
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 
 	staleIdx := strings.Index(md, "## ☠ Stale")
 	closedIdx := strings.Index(md, "## ⛔ Closed")
@@ -187,7 +187,7 @@ func TestNoteLessIssueRowReadsAsFact(t *testing.T) {
 		Bucket: model.IssueBucketOpen, Action: model.IssueActionTriage,
 		Priority: model.PriorityNeutral,
 	}}
-	md := Render(nil, issues, "x", issueNow)
+	md := Render(nil, issues, nil, "x", issueNow)
 
 	if !strings.Contains(md, "no engagement yet") {
 		t.Errorf("note-less issue row does not state its disposition (TDD 8.3)\n%s", md)
@@ -203,7 +203,7 @@ func TestNoteLessIssueRowReadsAsFact(t *testing.T) {
 // TestIssueCloseReasonEmojiIsDeterministic proves the closed outcome carries a
 // fixed per-enum glyph rather than an inferred one (TDD 8.2).
 func TestIssueCloseReasonEmojiIsDeterministic(t *testing.T) {
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 	if !strings.Contains(md, "🚪 CLOSED / ✅ completed") {
 		t.Errorf("completed outcome missing its deterministic glyph (TDD 8.2)\n%s", md)
 	}
@@ -216,7 +216,7 @@ func TestIssueCloseReasonEmojiIsDeterministic(t *testing.T) {
 // explicit about being empty) when nothing is tracked, so the document shape does
 // not change run to run.
 func TestEmptyIssueSetStillRendersSection(t *testing.T) {
-	md := Render(sample(), nil, "x", issueNow)
+	md := Render(sample(), nil, nil, "x", issueNow)
 	if !strings.Contains(md, "# 🗒 Issues") {
 		t.Error("Issues section absent when there are no issues")
 	}
@@ -255,7 +255,7 @@ func TestUpdatedColumnOnLiveTables(t *testing.T) {
 		},
 	}
 
-	md := Render(prs, nil, "x", issueNow)
+	md := Render(prs, nil, nil, "x", issueNow)
 
 	if !strings.Contains(md, "| Repo | PR | Title | Created | Age | Updated | Action Needed |") {
 		t.Error("submitter Open table is missing the Updated column")
@@ -285,7 +285,7 @@ func TestUpdatedUnknownRendersDash(t *testing.T) {
 		Priority: model.PriorityNeutral, Companion: "iterating on feedback", Emoji: "🔧",
 	}}
 
-	md := Render(prs, nil, "x", issueNow)
+	md := Render(prs, nil, nil, "x", issueNow)
 
 	if strings.Contains(md, "20353d") || strings.Contains(md, "739") {
 		t.Errorf("a zero activity date produced a computed age\n%s", md)
@@ -314,7 +314,7 @@ func TestActiveIssuesSortByLastActivity(t *testing.T) {
 			Created: created, LastActivity: older, Bucket: model.IssueBucketOpen,
 			Action: model.IssueActionAwaitingOthers, Priority: model.PriorityNeutral},
 	}
-	md := Render(nil, issues, "x", issueNow)
+	md := Render(nil, issues, nil, "x", issueNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -341,7 +341,7 @@ func TestStaleIssuesSortByLastActivity(t *testing.T) {
 			Created: created, LastActivity: older, Bucket: model.IssueBucketStale,
 			Priority: model.PriorityNeutral},
 	}
-	md := Render(nil, issues, "x", issueNow)
+	md := Render(nil, issues, nil, "x", issueNow)
 
 	iNewest := strings.Index(md, "Newest activity")
 	iOldest := strings.Index(md, "Oldest activity")
@@ -354,7 +354,7 @@ func TestStaleIssuesSortByLastActivity(t *testing.T) {
 }
 
 func TestStaleIssueTableShape(t *testing.T) {
-	md := Render(nil, sampleIssues(), "x", issueNow)
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
 	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Reason |") {
 		t.Errorf("stale issue table header missing or wrong shape\n%s", md)
 	}

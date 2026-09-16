@@ -2,6 +2,8 @@ package github
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -135,7 +137,7 @@ func TestFetchTrackedNeverMisassignsRoleOnIncompleteAuthoredSearch(t *testing.T)
 	defer ts.Close()
 
 	c := newTestSearchClient(t, ts)
-	_, err := c.FetchTracked(t.Context(), nil, false)
+	_, err := c.FetchTracked(t.Context(), nil, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err == nil {
 		t.Fatal("expected FetchTracked to abort on an incomplete authored-search page, got nil error")
 	}

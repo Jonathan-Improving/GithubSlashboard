@@ -26,6 +26,11 @@ import (
 const (
 	TagPR    = "!pr"
 	TagIssue = "!issue"
+	// TagPinnedPR identifies an operator pin: a standing instruction to track a
+	// specific PR under a chosen role regardless of what the searches discover
+	// (SCHEMA § !pinned-pr document). It coexists with !pr/!issue in the same
+	// stream via the same tag-dispatch mechanism.
+	TagPinnedPR = "!pinned-pr"
 )
 
 // Store is a decoded source of truth: the tracked PRs and issues plus any
@@ -34,6 +39,10 @@ const (
 type Store struct {
 	PRs    []model.PR
 	Issues []model.Issue
+	// Pinned holds the operator's standing pin instructions (SCHEMA §
+	// !pinned-pr). They persist independently of the !pr records they produce
+	// and are removed only by an explicit unpin.
+	Pinned []model.PinnedPR
 	// unknown holds raw documents with tags this build does not recognize,
 	// round-tripped unchanged so a newer store written by a future build is
 	// never dropped.
@@ -107,6 +116,15 @@ func (s *Store) ingest(doc *yaml.Node) error {
 			return fmt.Errorf("invalid !issue document: %w", err)
 		}
 		s.Issues = append(s.Issues, iss)
+	case TagPinnedPR:
+		var pin model.PinnedPR
+		if err := content.Decode(&pin); err != nil {
+			return fmt.Errorf("malformed !pinned-pr document: %w", err)
+		}
+		if err := validatePinnedPR(pin); err != nil {
+			return fmt.Errorf("invalid !pinned-pr document: %w", err)
+		}
+		s.Pinned = append(s.Pinned, pin)
 	default:
 		// Preserve unrecognized entity documents verbatim (TDD 2.5).
 		clone := *content
@@ -178,17 +196,62 @@ func validateIssue(iss model.Issue) error {
 	if iss.Provider != "" && !iss.Provider.Valid() {
 		return fmt.Errorf("invalid provider %q", iss.Provider)
 	}
-	switch iss.Bucket {
-	case model.IssueBucketOpen:
-		if iss.Action != "" && !iss.Action.Valid() {
-			return fmt.Errorf("invalid action %q", iss.Action)
-		}
-	case model.IssueBucketClosed:
-		if iss.CloseReason != "" && !iss.CloseReason.Valid() {
-			return fmt.Errorf("invalid close_reason %q", iss.CloseReason)
-		}
+	return nil
+}
+
+// validatePinnedPR enforces the field contract for a persisted !pinned-pr
+// document (SCHEMA § !pinned-pr): a repo, a positive number, and a valid PR
+// role. It is deliberately stricter than the !pr/!issue validators on role —
+// an empty or unknown role is rejected outright — because a pin is
+// operator-supplied intent with no derived-field leniency to allow for.
+func validatePinnedPR(pin model.PinnedPR) error {
+	if pin.Repo == "" {
+		return fmt.Errorf("repo is required")
+	}
+	if pin.Number <= 0 {
+		return fmt.Errorf("number must be positive, got %d", pin.Number)
+	}
+	if !pin.Role.Valid() {
+		return fmt.Errorf("invalid role %q", pin.Role)
 	}
 	return nil
+}
+
+// Pin adds or updates the pin for pin.Key(): an existing pin for the same PR
+// has its role overwritten (a re-pin under a different role is an update, not a
+// duplicate), otherwise the pin is appended. It reports whether the pin was
+// newly added (true) or updated in place (false). The pin is validated before
+// being recorded; an invalid pin returns an error and leaves the store
+// unchanged.
+func (s *Store) Pin(pin model.PinnedPR) (added bool, err error) {
+	if err := validatePinnedPR(pin); err != nil {
+		return false, err
+	}
+	for i := range s.Pinned {
+		if s.Pinned[i].Key() == pin.Key() {
+			s.Pinned[i].Role = pin.Role
+			return false, nil
+		}
+	}
+	s.Pinned = append(s.Pinned, pin)
+	return true, nil
+}
+
+// Unpin removes the pin for key (repo#number), leaving every !pr and !issue
+// document untouched. It reports whether a pin was actually removed, so an
+// unpin of a PR that has no pin is a clean no-op the caller can report as
+// "nothing to remove" (idempotent).
+func (s *Store) Unpin(key string) (removed bool) {
+	kept := s.Pinned[:0]
+	for _, p := range s.Pinned {
+		if p.Key() == key {
+			removed = true
+			continue
+		}
+		kept = append(kept, p)
+	}
+	s.Pinned = kept
+	return removed
 }
 
 // Merge overlays freshly classified PRs onto the existing store, preserving
@@ -301,6 +364,16 @@ func (s *Store) Write(path string) error {
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 
+	// An entirely empty store (no PRs, issues, pins, or preserved unknowns) must
+	// write an empty file. Closing a yaml encoder that never encoded a document
+	// errors with "expected STREAM-START", so short-circuit: an empty file
+	// re-reads as an empty store (Read handles it), which is exactly the intent.
+	// This path is reachable once --unpin removes the last document from a store
+	// that held only a pin.
+	if len(s.PRs) == 0 && len(s.Issues) == 0 && len(s.Pinned) == 0 && len(s.unknown) == 0 {
+		return atomicWrite(path, nil)
+	}
+
 	for i := range s.PRs {
 		node, err := prNode(s.PRs[i])
 		if err != nil {
@@ -321,6 +394,28 @@ func (s *Store) Write(path string) error {
 		if err := enc.Encode(node); err != nil {
 			enc.Close()
 			return fmt.Errorf("encode !issue document: %w", err)
+		}
+	}
+	// Emit pins in a deterministic order (repo, then number) so an unchanged
+	// pin set produces a byte-identical file (TDD 2.3) regardless of the order
+	// pins were added in.
+	pins := make([]model.PinnedPR, len(s.Pinned))
+	copy(pins, s.Pinned)
+	sort.SliceStable(pins, func(i, j int) bool {
+		if pins[i].Repo != pins[j].Repo {
+			return pins[i].Repo < pins[j].Repo
+		}
+		return pins[i].Number < pins[j].Number
+	})
+	for i := range pins {
+		node, err := pinnedPRNode(pins[i])
+		if err != nil {
+			enc.Close()
+			return err
+		}
+		if err := enc.Encode(node); err != nil {
+			enc.Close()
+			return fmt.Errorf("encode !pinned-pr document: %w", err)
 		}
 	}
 	for _, u := range s.unknown {
@@ -356,6 +451,18 @@ func issueNode(iss model.Issue) (*yaml.Node, error) {
 		return nil, fmt.Errorf("encode issue to node: %w", err)
 	}
 	node.Tag = TagIssue
+	node.Style = 0
+	return &node, nil
+}
+
+// pinnedPRNode builds a tagged YAML node for a pin so each document carries the
+// !pinned-pr tag, letting pins coexist with !pr and !issue in one stream.
+func pinnedPRNode(pin model.PinnedPR) (*yaml.Node, error) {
+	var node yaml.Node
+	if err := node.Encode(pin); err != nil {
+		return nil, fmt.Errorf("encode pinned PR to node: %w", err)
+	}
+	node.Tag = TagPinnedPR
 	node.Style = 0
 	return &node, nil
 }

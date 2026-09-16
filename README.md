@@ -118,6 +118,27 @@ the model, whatever this setting says. Its trail is just "opened", so there is
 nothing for a model to read and a note would be invented rather than summarized.
 Such a row reports its state as a plain fact and is not marked unverified.
 
+## Pinning a pull request
+
+The tool tracks the PRs you author and the ones you are asked to review. To
+follow a PR you neither authored nor were asked to review, pin it under the role
+you want it filed as:
+
+```bash
+./githubslashboard -pin owner/repo#123=reviewer     # track it in the Reviewer section
+./githubslashboard -pin owner/repo#123=submitter    # track it in the Submitter section
+./githubslashboard -unpin owner/repo#123            # stop tracking it explicitly
+```
+
+A pin is a one-line store edit — it makes no GitHub call and needs no token. On
+the next scheduled run the pinned PR is fetched, judged, and moved between
+Open/Stale/Merged (or Done under Reviewer) like any other, and its row carries a
+📌 marker so you can tell an explicit pick from a naturally-tracked one. A pinned
+role wins over whatever role the searches would assign. Pinning is permanent
+until you unpin: a pinned PR stays listed even after it merges or closes.
+Unpinning removes only the pin — if the searches still find the PR, it stays
+tracked under its natural role.
+
 ## Examples
 
 The [`examples/`](examples/) directory has a rendered

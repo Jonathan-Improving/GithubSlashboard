@@ -997,3 +997,97 @@ and an issue with no conversation is never sent to the model.
   change was indistinguishable from a run that correctly stayed quiet — a
   change-detector that fails by *not firing* leaves no error to notice, so its
   decision must be visible where the operator will actually see it
+
+
+---
+
+## 10. Operator pins
+
+An operator pin is a standing instruction to track a specific PR under a chosen
+role, whether or not any GitHub search discovers it. The pin is its own
+`!pinned-pr` document, separate from the `!pr` record it produces, so operator
+intent and derived state stay cleanly separated. These rubrics span acquisition
+(§1), the store (§2), render (§3), and a pin-mutation CLI.
+
+### P.1 A pinned PR is force-included in the tracked set
+- **Given** a `!pinned-pr` document for `owner/repo#N` with a role
+- **When** the tool acquires the tracked set
+- **Then** `owner/repo#N` is fetched and classified as a tracked PR even when
+  none of the `author:` / `review-requested:` / `reviewed-by:` searches return
+  it, and it renders in the role-split section for its pinned role
+
+### P.2 A pinned role wins over the discovered role
+- **Given** a `!pinned-pr` for `owner/repo#N` pinned as one role
+- **And** the searches independently discover `owner/repo#N` under a different
+  role (e.g. pinned `reviewer` but the operator authored it)
+- **When** the tool classifies and renders
+- **Then** the record carries the **pinned** role, and the override is logged
+  (the decision, the PR identifier, discovered-vs-pinned role) so it is never
+  silent
+- **Note** this is the deliberate, durable operator override — distinct from the
+  silent transient mis-filing ANTI-PATTERNS #11 guards against; the search-merge
+  and its incomplete-results abort still run first, unchanged
+
+### P.3 A pinned PR settles like any tracked PR and stays pinned
+- **Given** a pinned PR that has since merged or closed
+- **When** the tool re-runs
+- **Then** it flows through the normal terminal-skip carry-forward and renders in
+  the Merged/Closed (or reviewer Done) table, and the `!pinned-pr` document
+  persists — the PR is not auto-unpinned and does not disappear
+- **And** its pinned role is re-stamped from the pin each run (the pin, not the
+  carried record, is the source of truth for role)
+
+### P.4 `--pin` writes only the pin document, with no GitHub call
+- **Given** the CLI invoked as `--pin owner/repo#N=submitter` (or `=reviewer`)
+- **When** it runs
+- **Then** it reads the store, adds (or updates) exactly one `!pinned-pr`
+  document for `owner/repo#N` with that role, writes the store, and exits —
+  making no GitHub request and touching no `!pr`/`!issue` document
+- **And** a malformed target (`owner/repo#N` not parseable, or a role outside
+  {submitter, reviewer}) is rejected with a non-zero exit and no store write
+
+### P.5 `--unpin` removes only the pin document
+- **Given** a `!pinned-pr` for `owner/repo#N` in the store
+- **When** the CLI is invoked as `--unpin owner/repo#N`
+- **Then** that `!pinned-pr` document is removed and the store written; any `!pr`
+  document for `owner/repo#N` is left untouched
+- **And** on the next pipeline run the PR is tracked only if a search
+  independently discovers it (under its natural role); otherwise it is no longer
+  force-included
+- **And** `--unpin` of a PR that has no pin document exits cleanly (idempotent),
+  reporting nothing to remove
+
+### P.6 The pin document coexists and round-trips
+- **Given** a store holding `!pr`, `!issue`, and `!pinned-pr` documents
+- **When** the tool reads and rewrites it with upstream unchanged
+- **Then** all three document types are preserved, the `!pinned-pr` documents
+  validate (require repo, positive number, a valid role), and an unrecognized
+  tag is still round-tripped verbatim (extends 2.5)
+
+### P.7 A bad pin is skipped, not fatal
+- **Given** a `!pinned-pr` for a PR that returns 404 on fetch (typo'd or deleted)
+- **When** the tool acquires
+- **Then** the bad pin is logged loudly and skipped, the rest of acquisition
+  proceeds normally, and the `!pinned-pr` document is left in place for the
+  operator to fix or `--unpin`
+- **Note** deliberate narrow exception to 1.2 (acquisition-failure-is-fatal),
+  scoped to the per-pin fetch because a pin is operator-supplied input, not a
+  systemic API failure
+
+### P.8 Pinned PRs render with a marker
+- **Given** a rendered PR that originates from a `!pinned-pr`
+- **When** the Markdown is rendered
+- **Then** its row carries the pin marker (📌), distinguishing it from a
+  naturally-tracked PR of the same role/bucket
+- **And** a PR with no matching `!pinned-pr` renders without the marker,
+  unchanged from today
+
+### P.9 The store lock serializes the CLI and the pipeline
+- **Given** a pipeline run holding the store lock
+- **When** `--pin`/`--unpin` is invoked concurrently
+- **Then** the CLI waits (bounded) for the lock, performs its mutation once the
+  pipeline releases, and neither writer's changes are lost
+- **And** if the bounded wait elapses, the CLI exits non-zero with a "store
+  busy, retry" message rather than blocking indefinitely or clobbering
+- **And** a lock left behind by a hard-killed process is reclaimed once older
+  than a generous age floor, so a crash cannot wedge the store permanently

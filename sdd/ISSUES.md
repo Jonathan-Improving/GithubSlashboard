@@ -148,3 +148,33 @@ timeline entry, but every resolution observed also carried a comment.
 - Accept it: the scenario requires a same-run count coincidence with no other
   qualifying trail activity, which is narrower than most of the other known
   limitations in this document.
+
+## F. A newly pinned PR produces no notification on its first appearance
+
+**Severity**: Low (intended behavior, consistent with every other first-seen
+item; surfaced only as a one-time expectation mismatch — the operator looked for
+a notification about a freshly pinned PR and found none)
+
+When a PR is pinned and then crawled for the first time, it is a first-seen item:
+there is no prior stored record to diff its status against. The notification hook
+deliberately excludes first-seen items (TDD § 9; SCHEMA § Notification hook — "a
+first-seen item never appears, since there is nothing to diff against"), so a
+newly pinned PR does not trigger a notification when it first lands in the
+dashboard, exactly as a newly discovered authored/review-requested PR does not.
+It will notify normally on its next status change (a bucket move, a review
+request, a build going red, a merge, and so on).
+
+This is not a defect — it is the same first-seen rule applied uniformly. It is
+recorded here only because pinning is an *explicit operator action* whose
+immediate effect a reader may reasonably expect to be announced, unlike a PR that
+simply appears from a search. The pin's effect is instead confirmed by the PR
+appearing in the rendered document (with its 📌 marker), not by a toast.
+
+**Mitigation options**:
+- Treat a first crawl of a pinned PR as notification-worthy, distinct from an
+  ordinary first-seen item — the pin is an explicit signal of interest, so its
+  first landing arguably *is* news. Costs a small carve-out in the first-seen
+  exclusion, keyed on the presence of a matching `!pinned-pr`.
+- Accept it: the rendered document is the record of what is tracked, and the
+  pin/unpin command already reports success at the CLI, so the operator has
+  immediate confirmation the pin took without needing a toast.
