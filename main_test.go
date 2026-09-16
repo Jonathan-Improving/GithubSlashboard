@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -10,6 +12,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Jonathan-Improving/githubslashboard/config"
+	"github.com/Jonathan-Improving/githubslashboard/model"
 )
 
 // TestSignalNotifyContextCancelsOnSIGTERM covers the graceful-shutdown wiring
@@ -150,4 +155,49 @@ func TestIsPermissionDenied(t *testing.T) {
 	if isPermissionDenied(errors.New("some other error")) {
 		t.Error("unrelated error should not be a permission denial")
 	}
+}
+
+// TestFireNotifyHookLogsDecisionAtInfo covers TDD 9.8: the per-run notify
+// decision is visible at the default INFO level, so a run that correctly
+// stayed quiet is distinguishable in the log from one that silently swallowed
+// a change (ANTI-PATTERNS #13, whose defect hid because the skip logged at
+// Debug). Both no-fire branches — nothing changed, and changed-but-inert
+// because no hook is configured — return before any provider call, so this
+// stays fully offline with a nil provider.
+func TestFireNotifyHookLogsDecisionAtInfo(t *testing.T) {
+	infoOnly := &slog.HandlerOptions{Level: slog.LevelInfo}
+
+	t.Run("nothing changed", func(t *testing.T) {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, infoOnly))
+		cfg := config.Config{NotifyHook: "true", NotifyTimeout: time.Second}
+		prs := []model.PR{{Repo: "o/n", Number: 1, StatusChanged: false}}
+
+		fireNotifyHook(context.Background(), cfg, nil, nil, prs, nil, log)
+
+		out := buf.String()
+		if !strings.Contains(out, "no status changed") {
+			t.Errorf("expected an INFO decision line for a quiet run, got: %q", out)
+		}
+	})
+
+	t.Run("changed but hook not configured", func(t *testing.T) {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, infoOnly))
+		cfg := config.Config{NotifyHook: "", NotifyTimeout: time.Second}
+		prs := []model.PR{{
+			Repo: "o/n", Number: 2, Role: model.RoleSubmitter,
+			Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, StatusChanged: true,
+		}}
+
+		fireNotifyHook(context.Background(), cfg, nil, nil, prs, nil, log)
+
+		out := buf.String()
+		if !strings.Contains(out, "hook not configured") {
+			t.Errorf("expected an INFO decision line for an inert run, got: %q", out)
+		}
+		if !strings.Contains(out, "changed=1") {
+			t.Errorf("expected the changed count in the INFO line, got: %q", out)
+		}
+	})
 }

@@ -16,7 +16,7 @@ change in front of you.
 | 6 | Provider / LLM hand-off | 6.1 – 6.18 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
-| 9 | Notification hook | 9.1 – 9.6 |
+| 9 | Notification hook | 9.1 – 9.8 |
 
 ## Configurable constants referenced below
 
@@ -848,40 +848,51 @@ and an issue with no conversation is never sent to the model.
 
 ## 9. Notification hook
 
-### 9.1 A hook fires only on an actual bucket transition
-- **Given** a completed classification pass over PRs and issues, each compared
-  against its own prior stored bucket (the store as read at the start of this
-  run, before this run's own classification touches it)
+### 9.1 A hook fires on any status change to a tracked item
+- **Given** a completed classification pass, each item compared against its own
+  prior stored record (the store as read at the start of this run, before this
+  run's own classification touches it)
 - **When** the tool determines whether to notify
-- **Then** it collects exactly the items whose bucket this run differs from
-  their prior stored bucket, and fires the hook only when that set is
-  non-empty
-- **And** an item whose bucket did not change never appears in the set, even
+- **Then** it collects exactly the items whose status signature this run
+  differs from the signature of their prior stored record, and fires the hook
+  only when that set is non-empty
+- **And** the signature is built from the fields that constitute the item's
+  disposition — bucket, action (which fully determines the reviewer
+  ball-holding a reader sees), the CI flag, priority, emoji, companion,
+  close-reason, and the `LastActivity` timestamp — but **not** any
+  `now`-relative value (Age, the rendered Updated column), which changes every
+  run regardless of any judgment and would otherwise fire on every live item
+- **And** an item whose signature did not change never appears in the set, even
   when the provider was freshly consulted to confirm it (an open PR re-judged
-  into the same open bucket, or an unverified judgment that still leaves the
-  bucket where it was) — a fresh judgment alone is not what matters here, only
-  whether the disposition actually moved
+  to the same disposition, or an unverified judgment that leaves the disposition
+  where it was)
 - **And** a first-seen item (no prior stored record at all) never appears in
-  the set either — there is nothing for it to have transitioned from
-- **Note** this reversed the original, narrower design (open-bucket-outcomes
-  only): a live PR merged during a run and never appeared in a single
-  notification, traced to `WasJudged` being hardcoded to `bucket == open`
-  regardless of whether a real, fresh judgment had just produced a genuine
-  Open→Merged transition (ANTI-PATTERNS #12)
+  the set either — there is nothing to diff against
+- **Note** this reversed a narrower predecessor keyed on a bucket transition
+  (`Bucket != priorBucket`): a reviewer PR that gained a pending review request
+  changed its action, companion, and table placement while staying in the
+  `open` bucket, so a bucket-only rule dropped it silently — the exact
+  "someone is waiting on me" signal the operator most wanted
+  (ANTI-PATTERNS #13); the bucket-transition rule had itself replaced an even
+  narrower open-only rule (#12)
 
-### 9.2 Every bucket transition is notification-worthy, including into and out of settled states
-- **Given** an item whose bucket changed this run — Open→Merged, Open→Closed,
-  Open→Stale, or Stale→Open — for either a PR or an issue, treated identically
+### 9.2 A within-bucket status change is notification-worthy
+- **Given** a tracked item whose bucket did not change but whose disposition
+  did — e.g. a reviewer PR that gained a pending review request (now awaiting
+  our action), a submitter PR whose build went red, a priority raised to
+  elevated, or an action moving changes_requested→merge_ready — for either a PR
+  or an issue, treated identically
 - **When** the tool determines whether to notify
-- **Then** that item appears in the hook's payload; none of these transitions
-  are excluded
-- **Note** this replaces the original design, which excluded merged, closed,
-  and stale outcomes on the reasoning that "a settled item is not something
-  the operator is expected to act on further." The operator's own stated
-  intent is broader: an Open→Merged or Open→Closed transition is exactly the
-  kind of update worth a notification, Open→Stale tells the operator a PR
-  just went quiet, and Stale→Open means someone finally touched a PR the
-  operator had written off — all four are meaningful state changes, not noise
+- **Then** that item appears in the hook's payload, even though its bucket is
+  unchanged
+- **And** every bucket transition (Open→Merged, Open→Closed, Open→Stale,
+  Stale→Open) still appears too, since a bucket change necessarily changes the
+  signature — no transition that notified before stops
+- **Note** this supersedes the prior bucket-transition-only contract; a review
+  request landing on an already-open reviewer PR was the live miss that drove
+  it (ANTI-PATTERNS #13), the same failure family as #12 with a distinct root
+  cause — a predicate narrower than the item's whole status, rather than
+  open-only-vs-any-transition
 
 ### 9.3 The hook payload carries the new state, not a diff
 - **Given** a non-empty set of changed items (9.1)
@@ -972,3 +983,17 @@ and an issue with no conversation is never sent to the model.
   provider/parse.go's thinking-trace handling, and every existing Summarize
   test used a clean canned response, so the gap passed a fully green suite
   and was only caught by reading an actual delivered desktop notification
+
+### 9.8 The notify decision is visible at the default log level
+- **Given** any completed run, hook configured or not
+- **When** the notify step runs
+- **Then** it logs one INFO line stating how many items changed this run and
+  whether the hook fired, was inert because no hook is configured, or found
+  nothing changed — so a run that correctly stayed quiet is distinguishable in
+  the log from one that silently swallowed a change, at the default level
+  without `-verbose`
+- **Note** this closes the second half of ANTI-PATTERNS #13: the predecessor
+  logged its skip at `Debug`, so at the default INFO level a silently-swallowed
+  change was indistinguishable from a run that correctly stayed quiet — a
+  change-detector that fails by *not firing* leaves no error to notice, so its
+  decision must be visible where the operator will actually see it

@@ -441,12 +441,12 @@ func TestClassifyIssuesPreservesOrder(t *testing.T) {
 	}
 }
 
-// TestIssueWasJudgedOnOpenToClosedTransition covers TDD 9.2 for issues,
-// mirroring TestWasJudgedOnOpenToClosedTransition for PRs: an issue that
+// TestIssueStatusChangedOnOpenToClosedTransition covers TDD 9.2 for issues,
+// mirroring TestStatusChangedOnOpenToClosedTransition for PRs: an issue that
 // transitions from a prior stored bucket of Open to Closed this run sets
-// WasJudged, so the notification hook fires — issues must be treated
+// StatusChanged, so the notification hook fires — issues must be treated
 // consistently with PRs for bucket-transition notification.
-func TestIssueWasJudgedOnOpenToClosedTransition(t *testing.T) {
+func TestIssueStatusChangedOnOpenToClosedTransition(t *testing.T) {
 	prior := model.Issue{Repo: "a/x", Number: 70, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
 	c, _ := issueClassifierWithPrior(
 		`{"bucket":"closed","priority":"neutral","companion":"nothing further to report","emoji":"✅"}`,
@@ -463,14 +463,14 @@ func TestIssueWasJudgedOnOpenToClosedTransition(t *testing.T) {
 	if got.Bucket != model.IssueBucketClosed {
 		t.Fatalf("expected closed floor, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
-		t.Error("Open→Closed is a transition and must set WasJudged for issues too (TDD 9.2)")
+	if !got.StatusChanged {
+		t.Error("Open→Closed is a transition and must set StatusChanged for issues too (TDD 9.2)")
 	}
 }
 
-// TestIssueWasJudgedOnOpenToStaleTransition mirrors the PR stale case: the
+// TestIssueStatusChangedOnOpenToStaleTransition mirrors the PR stale case: the
 // operator explicitly asked for this notification.
-func TestIssueWasJudgedOnOpenToStaleTransition(t *testing.T) {
+func TestIssueStatusChangedOnOpenToStaleTransition(t *testing.T) {
 	prior := model.Issue{Repo: "a/x", Number: 71, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
 	c, _ := issueClassifierWithPrior(
 		`{"bucket":"stale","priority":"neutral","companion":"nothing further to report","emoji":"👀"}`,
@@ -486,14 +486,14 @@ func TestIssueWasJudgedOnOpenToStaleTransition(t *testing.T) {
 	if got.Bucket != model.IssueBucketStale {
 		t.Fatalf("expected stale bucket, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
+	if !got.StatusChanged {
 		t.Error("Open→Stale is a transition the operator asked to be notified about, for issues too (TDD 9.2)")
 	}
 }
 
-// TestIssueWasJudgedOnStaleToOpenTransition mirrors the PR "someone finally
+// TestIssueStatusChangedOnStaleToOpenTransition mirrors the PR "someone finally
 // touched a dead PR" case for issues.
-func TestIssueWasJudgedOnStaleToOpenTransition(t *testing.T) {
+func TestIssueStatusChangedOnStaleToOpenTransition(t *testing.T) {
 	prior := model.Issue{Repo: "a/x", Number: 72, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketStale}
 	c, _ := issueClassifierWithPrior(
 		`{"bucket":"open","action":"awaiting_response","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`,
@@ -509,15 +509,20 @@ func TestIssueWasJudgedOnStaleToOpenTransition(t *testing.T) {
 	if got.Bucket != model.IssueBucketOpen {
 		t.Fatalf("expected open bucket, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
+	if !got.StatusChanged {
 		t.Error("Stale→Open is a transition the operator asked to be notified about, for issues too (TDD 9.2)")
 	}
 }
 
-// TestIssueWasJudgedFalseWhenBucketUnchanged covers the negative case for
-// issues: staying in the same bucket does not set WasJudged.
-func TestIssueWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
-	prior := model.Issue{Repo: "a/x", Number: 73, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen}
+// TestIssueStatusChangedFalseWhenBucketUnchanged covers the negative case for
+// issues: an unchanged signature (same bucket, same disposition, same
+// activity) does not set StatusChanged.
+func TestIssueStatusChangedFalseWhenSignatureUnchanged(t *testing.T) {
+	prior := model.Issue{
+		Repo: "a/x", Number: 73, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen,
+		Action: model.IssueActionAwaitingOthers, Priority: model.PriorityNeutral,
+		Companion: "still waiting here", Emoji: "🔄", LastActivity: issueRefNow,
+	}
 	c, _ := issueClassifierWithPrior(
 		`{"bucket":"open","action":"awaiting_others","priority":"neutral","companion":"still waiting here","emoji":"🔄"}`,
 		map[string]model.Issue{prior.Key(): prior})
@@ -532,14 +537,42 @@ func TestIssueWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
 	if got.Bucket != model.IssueBucketOpen {
 		t.Fatalf("expected open bucket, got %q", got.Bucket)
 	}
-	if got.WasJudged {
-		t.Error("Open→Open is not a transition for an issue either and must not set WasJudged")
+	if got.StatusChanged {
+		t.Error("an unchanged issue signature must not set StatusChanged")
 	}
 }
 
-// TestIssueWasJudgedFalseOnFirstSeenIssue covers the first-seen case for
+// TestIssueStatusChangedOnWithinBucketDispositionChange mirrors the PR
+// within-bucket case (TDD 9.2): an open issue whose action moves
+// awaiting_others→awaiting_response, staying open, is notification-worthy.
+func TestIssueStatusChangedOnWithinBucketDispositionChange(t *testing.T) {
+	prior := model.Issue{
+		Repo: "a/x", Number: 75, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen,
+		Action: model.IssueActionAwaitingOthers, Priority: model.PriorityNeutral,
+		Companion: "waiting on maintainer", Emoji: "⏳", LastActivity: issueRefNow.Add(-time.Hour),
+	}
+	c, _ := issueClassifierWithPrior(
+		`{"bucket":"open","action":"awaiting_response","priority":"neutral","companion":"maintainer replied, needs our answer","emoji":"🔄"}`,
+		map[string]model.Issue{prior.Key(): prior})
+
+	fresh := model.Issue{
+		Repo: "a/x", Number: 75, Role: model.IssueRoleAuthor, CommentCount: 2,
+		Created: issueRefNow.Add(-2 * time.Hour), LastActivity: issueRefNow,
+		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "maintainer replied"}},
+	}
+	got := c.classifyIssue(context.Background(), fresh)
+
+	if got.Bucket != model.IssueBucketOpen {
+		t.Fatalf("expected bucket to stay open, got %q", got.Bucket)
+	}
+	if !got.StatusChanged {
+		t.Error("a within-bucket issue disposition change is notification-worthy and must set StatusChanged (TDD 9.2)")
+	}
+}
+
+// TestIssueStatusChangedFalseOnFirstSeenIssue covers the first-seen case for
 // issues: no prior record means no transition to report.
-func TestIssueWasJudgedFalseOnFirstSeenIssue(t *testing.T) {
+func TestIssueStatusChangedFalseOnFirstSeenIssue(t *testing.T) {
 	c := issueClassifier(fixedProvider{out: `{"bucket":"open","action":"triage","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`})
 	fresh := model.Issue{
 		Repo: "a/x", Number: 74, Role: model.IssueRoleAuthor, CommentCount: 1,
@@ -547,7 +580,7 @@ func TestIssueWasJudgedFalseOnFirstSeenIssue(t *testing.T) {
 		Events: []model.Event{{Timestamp: issueRefNow, Kind: model.EventComment, Text: "brand new"}},
 	}
 	got := c.classifyIssue(context.Background(), fresh)
-	if got.WasJudged {
-		t.Error("a first-seen issue has no prior bucket to transition from and must not set WasJudged")
+	if got.StatusChanged {
+		t.Error("a first-seen issue has no prior bucket to transition from and must not set StatusChanged")
 	}
 }

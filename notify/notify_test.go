@@ -28,25 +28,25 @@ func (f fakeSummarizer) Summarize(ctx context.Context, prompt string) (string, e
 	return f.out, f.err
 }
 
-func TestChangesFromPRsFiltersByWasJudged(t *testing.T) {
+func TestChangesFromPRsFiltersByStatusChanged(t *testing.T) {
 	prs := []model.PR{
-		{Repo: "o/n", Number: 1, Role: model.RoleSubmitter, Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, WasJudged: true},
-		{Repo: "o/n", Number: 2, Role: model.RoleSubmitter, Bucket: model.BucketOpen, Action: model.ActionMergeReady, WasJudged: false},
-		{Repo: "o/n", Number: 3, Role: model.RoleReviewer, Bucket: model.BucketMerged, WasJudged: false},
+		{Repo: "o/n", Number: 1, Role: model.RoleSubmitter, Bucket: model.BucketOpen, Action: model.ActionAwaitingReview, StatusChanged: true},
+		{Repo: "o/n", Number: 2, Role: model.RoleSubmitter, Bucket: model.BucketOpen, Action: model.ActionMergeReady, StatusChanged: false},
+		{Repo: "o/n", Number: 3, Role: model.RoleReviewer, Bucket: model.BucketMerged, StatusChanged: false},
 	}
 	got := ChangesFromPRs(prs)
 	if len(got) != 1 {
-		t.Fatalf("got %d changes, want 1 (only WasJudged=true PRs)", len(got))
+		t.Fatalf("got %d changes, want 1 (only StatusChanged=true PRs)", len(got))
 	}
 	if got[0].Number != 1 || got[0].Entity != entityPR {
 		t.Errorf("unexpected change: %+v", got[0])
 	}
 }
 
-func TestChangesFromIssuesFiltersByWasJudged(t *testing.T) {
+func TestChangesFromIssuesFiltersByStatusChanged(t *testing.T) {
 	issues := []model.Issue{
-		{Repo: "o/n", Number: 10, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen, Action: model.IssueActionTriage, WasJudged: true},
-		{Repo: "o/n", Number: 11, Role: model.IssueRoleParticipant, Bucket: model.IssueBucketOpen, WasJudged: false},
+		{Repo: "o/n", Number: 10, Role: model.IssueRoleAuthor, Bucket: model.IssueBucketOpen, Action: model.IssueActionTriage, StatusChanged: true},
+		{Repo: "o/n", Number: 11, Role: model.IssueRoleParticipant, Bucket: model.IssueBucketOpen, StatusChanged: false},
 	}
 	got := ChangesFromIssues(issues)
 	if len(got) != 1 {
@@ -59,7 +59,7 @@ func TestChangesFromIssuesFiltersByWasJudged(t *testing.T) {
 
 func TestChangesFromPRsEmptyWhenNoneJudged(t *testing.T) {
 	prs := []model.PR{
-		{Repo: "o/n", Number: 1, WasJudged: false},
+		{Repo: "o/n", Number: 1, StatusChanged: false},
 	}
 	if got := ChangesFromPRs(prs); len(got) != 0 {
 		t.Errorf("got %d changes, want 0", len(got))

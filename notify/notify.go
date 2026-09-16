@@ -63,16 +63,18 @@ const (
 	entityIssue = "issue"
 )
 
-// ChangesFromPRs returns the Change entries for every PR whose WasJudged flag
-// is set (TDD 9.1, 9.2) — a PR whose bucket this run differs from its prior
-// stored bucket, including a transition into or out of merged, closed, or
-// stale (any transition is notification-worthy). A PR whose bucket did not
-// change, and a first-seen PR with no prior record to compare against, never
-// appear here (WasJudged is false for both, by construction in classify).
+// ChangesFromPRs returns the Change entries for every PR whose StatusChanged
+// flag is set (TDD 9.1, 9.2) — a PR whose status signature this run differs
+// from its prior stored record's, whether that is a bucket transition (into or
+// out of merged, closed, or stale) or a within-bucket disposition change (a
+// review request landing, a build going red, a priority raised). A PR whose
+// status did not move, and a first-seen PR with no prior record to compare
+// against, never appear here (StatusChanged is false for both, by construction
+// in classify).
 func ChangesFromPRs(prs []model.PR) []Change {
 	var out []Change
 	for _, p := range prs {
-		if !p.WasJudged {
+		if !p.StatusChanged {
 			continue
 		}
 		out = append(out, Change{
@@ -91,11 +93,11 @@ func ChangesFromPRs(prs []model.PR) []Change {
 }
 
 // ChangesFromIssues returns the Change entries for every issue whose
-// WasJudged flag is set, mirroring ChangesFromPRs (TDD 9.1, 9.2).
+// StatusChanged flag is set, mirroring ChangesFromPRs (TDD 9.1, 9.2).
 func ChangesFromIssues(issues []model.Issue) []Change {
 	var out []Change
 	for _, i := range issues {
-		if !i.WasJudged {
+		if !i.StatusChanged {
 			continue
 		}
 		out = append(out, Change{

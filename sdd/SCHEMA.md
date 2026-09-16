@@ -488,18 +488,22 @@ The hook exists to prompt the operator to look at the status document, not to
 replace it — the payload carries only what changed and one human-readable line,
 not a full diff or the item's history.
 
-**Scope**: any PR or issue whose bucket this run differs from its prior stored
-bucket can appear in `changed` — including a transition into or out of merged,
-closed, or stale (Open→Merged, Open→Closed, Open→Stale, and Stale→Open are all
-notification-worthy; TDD 9.2). An item whose bucket did not change never
-appears, even when its floor-note call touched the provider this run — that
-call alone is not a judgment about whether anything *changed* (TDD 4.13's
-fingerprint concept has no floor/stale equivalent), and re-confirming an
-already-settled bucket is not news. A first-seen item (no prior stored record)
-never appears either, since there is nothing for it to have transitioned from.
+**Scope**: any PR or issue whose status signature this run differs from its
+prior stored record's can appear in `changed`. The signature is built from the
+fields that constitute the item's disposition — bucket, action, the CI flag,
+priority, emoji, companion, close-reason, and the raw `LastActivity` timestamp
+— excluding every `now`-relative value (Age, the rendered Updated column). This
+covers both a bucket transition (Open→Merged, Open→Closed, Open→Stale, and
+Stale→Open are all notification-worthy) and a within-bucket disposition change
+(a review request landing on an open reviewer PR, a build going red, a priority
+raised, an action moving changes_requested→merge_ready; TDD 9.1, 9.2). An item
+whose signature did not change never appears, even when its note call touched
+the provider this run — re-confirming an unchanged disposition is not news. A
+first-seen item (no prior stored record) never appears either, since there is
+nothing to diff against.
 
 **Firing condition**: the hook is invoked only when `changed` is non-empty. A
-run where every item's bucket stayed the same produces no notification —
+run where no item's status signature changed produces no notification —
 silence is the expected common case at a 20-minute cadence, not an error
 (TDD 9.1).
 

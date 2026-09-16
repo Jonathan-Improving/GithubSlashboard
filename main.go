@@ -248,22 +248,27 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// fireNotifyHook collects every open PR/issue that reached the provider for a
-// fresh judgment this run (TDD 9.1, 9.2), and — only when that set is
-// non-empty and a hook command is configured — asks the provider for a short
-// summary and delivers the JSON payload to the hook's stdin (TDD 9.3, 9.4).
-// fallback (may be nil) is tried if the primary's Summarize attempt fails
-// (TDD 6.15). Any failure is logged and never propagated: a broken
-// notification integration must never be the thing that fails the run
-// (TDD 9.5).
+// fireNotifyHook collects every PR/issue whose status signature changed this
+// run (TDD 9.1, 9.2), and — only when that set is non-empty and a hook command
+// is configured — asks the provider for a short summary and delivers the JSON
+// payload to the hook's stdin (TDD 9.3, 9.4). fallback (may be nil) is tried if
+// the primary's Summarize attempt fails (TDD 6.15). Any failure is logged and
+// never propagated: a broken notification integration must never be the thing
+// that fails the run (TDD 9.5).
+//
+// The per-run decision is logged at INFO whatever the outcome — fired, inert
+// (no hook configured), or nothing changed — so a run that correctly stayed
+// quiet is always distinguishable in the log from one that silently swallowed a
+// change the operator wanted, without needing -verbose (TDD 9.8; ANTI-PATTERNS
+// #13, whose defect hid precisely because the skip logged at Debug).
 func fireNotifyHook(ctx context.Context, cfg config.Config, prov, fallback provider.Provider, prs []model.PR, issues []model.Issue, log *slog.Logger) {
 	changed := append(notify.ChangesFromPRs(prs), notify.ChangesFromIssues(issues)...)
 	if len(changed) == 0 {
-		log.Debug("notify hook: nothing changed this run, skipping")
+		log.Info("notify: no status changed this run, hook not fired", "changed", 0)
 		return
 	}
 	if cfg.NotifyHook == "" {
-		log.Debug("notify hook: not configured, skipping", "changed", len(changed))
+		log.Info("notify: status changed but hook not configured, inert", "changed", len(changed))
 		return
 	}
 

@@ -18,6 +18,7 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 10 | A killed (not returned) process orphans its tmux harness session | Medium |
 | 11 | A timed-out GitHub search returns 200 with a silently partial result set | Medium |
 | 12 | A narrower-than-intended notification rule shipped as if it were the full design | Medium |
+| 13 | A notification predicate narrower than the item's status notifies silently-never | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -510,3 +511,53 @@ resources indefinitely until someone happened to list tmux sessions and notice
 the stale timestamps. Severity: Medium (resource leak, not a data-integrity or
 classification-correctness defect — but unbounded over time on a job that runs
 every 20 minutes for hours a day).
+
+## 13. A notification predicate narrower than the item's status notifies silently-never
+
+**Symptom**: No desktop notification arrived when a reviewer PR gained a "please
+review" request. Delivery was healthy (notifications had worked for weeks) and
+the store correctly recorded the request — `action: awaiting_review`, a fresh
+companion note, moved into the reviewer "Awaiting Our Action" table. The run
+that judged it logged nothing about notify at all.
+
+**What was tried**:
+- Suspected the first-seen exclusion — ruled out, the item had a prior record.
+- Suspected the bucket-transition rule (#12) — but the operator reported the row
+  *did* visibly change, so a bucket-only miss seemed wrong at first.
+- Read the live store and run logs: the PR's bucket was `open` before and after;
+  only its action/companion/table-placement moved. The notify step took the
+  `Debug`-level "nothing changed, skipping" path, invisible at the default INFO
+  level.
+
+**Root cause**: The notify trigger keyed on a **bucket** transition
+(`Bucket != priorBucket`), but an item's status — and the operator's notion of
+"changed" — is action/companion/reviewer-ball-holding/CI/priority-inclusive. A
+within-`open` change that alters the item's disposition (a review request making
+it await our action) is not a bucket change, so it never entered the payload.
+The gating flag was still named `WasJudged` while encoding "the bucket moved",
+compounding the mismatch. Because the skip logged at `Debug`, a silently
+swallowed change was indistinguishable at INFO from a run that correctly stayed
+quiet.
+
+**Resolution**: Gate notification on a diff of the item's **status signature** —
+a value over its disposition-bearing fields (bucket, action and the ball-holding
+derived from it, CI flag, priority, emoji, companion, close-reason, and the raw
+`LastActivity` timestamp), excluding every `now`-relative value. It is one
+shared definition of "same status", so a new status dimension is added in one
+place and cannot be missed field-by-field. Renamed the flag to `StatusChanged`,
+and raised the per-run notify decision to INFO so a silent skip can never hide.
+
+**Lesson**: When a notification exists to prompt a look at an item's status, its
+"did something change" predicate must cover the item's *whole* status, defined
+once in a shared place — not a hand-picked subset. Any narrower predicate —
+bucket-only here, open-only in #12 — silently misses the changes it does not
+name, and a change-detector that fails by *not firing* leaves no error to
+notice, so it must also log its decision at the default level. Same failure
+family as #12, distinct root cause: predicate-vs-whole-status, not
+open-only-vs-any-transition.
+
+**Cost**: Live for an unknown span before the operator noticed the specific
+silence and asked; every within-bucket status change in that window notified
+silently-never, with no INFO-level trace. Severity: Medium (best-effort
+notification only — classification and store stayed correct — but the operator's
+core "someone is waiting on me" signal was the exact thing dropped).

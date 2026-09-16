@@ -737,13 +737,13 @@ func TestPreviouslyUnverifiedPriorAlwaysInvokesProvider(t *testing.T) {
 	}
 }
 
-// TestWasJudgedOnOpenToMergedTransition covers TDD 9.2's reversal: a PR that
+// TestStatusChangedOnOpenToMergedTransition covers TDD 9.2's reversal: a PR that
 // transitions from a prior stored bucket of Open to Merged this run sets
-// WasJudged, so the notification hook actually fires on a merge — the exact
+// StatusChanged, so the notification hook actually fires on a merge — the exact
 // live defect this rubric was rewritten to fix (a merged PR silently never
-// appearing in a single notification, traced to WasJudged being hardcoded to
+// appearing in a single notification, traced to StatusChanged being hardcoded to
 // "bucket == open").
-func TestWasJudgedOnOpenToMergedTransition(t *testing.T) {
+func TestStatusChangedOnOpenToMergedTransition(t *testing.T) {
 	prior := model.PR{Repo: "o/n", Number: 60, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
 	c, _ := unchangedOpenClassifierWithPrior(
 		`{"bucket":"open","action":"merge_ready","priority":"neutral","companion":"nothing further to report","emoji":"✅"}`,
@@ -755,14 +755,14 @@ func TestWasJudgedOnOpenToMergedTransition(t *testing.T) {
 	if got.Bucket != model.BucketMerged {
 		t.Fatalf("expected merged floor, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
-		t.Error("Open→Merged is a transition and must set WasJudged so the notification hook fires (TDD 9.2)")
+	if !got.StatusChanged {
+		t.Error("Open→Merged is a transition and must set StatusChanged so the notification hook fires (TDD 9.2)")
 	}
 }
 
-// TestWasJudgedOnOpenToClosedTransition mirrors the merged case for a closed
+// TestStatusChangedOnOpenToClosedTransition mirrors the merged case for a closed
 // PR.
-func TestWasJudgedOnOpenToClosedTransition(t *testing.T) {
+func TestStatusChangedOnOpenToClosedTransition(t *testing.T) {
 	prior := model.PR{Repo: "o/n", Number: 61, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
 	c, _ := unchangedOpenClassifierWithPrior(
 		`{"bucket":"closed","close_reason":"cancelled","priority":"neutral","companion":"nothing further to report","emoji":"🗑️"}`,
@@ -774,15 +774,15 @@ func TestWasJudgedOnOpenToClosedTransition(t *testing.T) {
 	if got.Bucket != model.BucketClosed {
 		t.Fatalf("expected closed floor, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
-		t.Error("Open→Closed is a transition and must set WasJudged (TDD 9.2)")
+	if !got.StatusChanged {
+		t.Error("Open→Closed is a transition and must set StatusChanged (TDD 9.2)")
 	}
 }
 
-// TestWasJudgedOnOpenToStaleTransition covers the reversal for stale: the
+// TestStatusChangedOnOpenToStaleTransition covers the reversal for stale: the
 // operator explicitly asked for this — a PR that just went stale is worth
 // knowing about, unlike the old open-only rule.
-func TestWasJudgedOnOpenToStaleTransition(t *testing.T) {
+func TestStatusChangedOnOpenToStaleTransition(t *testing.T) {
 	now := time.Now()
 	prior := model.PR{Repo: "o/n", Number: 62, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
 	c, _ := unchangedOpenClassifierWithPrior(
@@ -799,15 +799,15 @@ func TestWasJudgedOnOpenToStaleTransition(t *testing.T) {
 	if got.Bucket != model.BucketStale {
 		t.Fatalf("expected stale bucket, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
-		t.Error("Open→Stale is a transition the operator asked to be notified about and must set WasJudged (TDD 9.2)")
+	if !got.StatusChanged {
+		t.Error("Open→Stale is a transition the operator asked to be notified about and must set StatusChanged (TDD 9.2)")
 	}
 }
 
-// TestWasJudgedOnStaleToOpenTransition covers the operator's explicit
+// TestStatusChangedOnStaleToOpenTransition covers the operator's explicit
 // "someone finally touched a dead PR" case: a PR whose prior bucket was Stale
-// and is freshly judged back into Open must set WasJudged.
-func TestWasJudgedOnStaleToOpenTransition(t *testing.T) {
+// and is freshly judged back into Open must set StatusChanged.
+func TestStatusChangedOnStaleToOpenTransition(t *testing.T) {
 	now := time.Now()
 	prior := model.PR{Repo: "o/n", Number: 63, Role: model.RoleSubmitter, Bucket: model.BucketStale}
 	c, _ := unchangedOpenClassifierWithPrior(
@@ -824,19 +824,26 @@ func TestWasJudgedOnStaleToOpenTransition(t *testing.T) {
 	if got.Bucket != model.BucketOpen {
 		t.Fatalf("expected open bucket, got %q", got.Bucket)
 	}
-	if !got.WasJudged {
-		t.Error("Stale→Open is a transition the operator asked to be notified about and must set WasJudged (TDD 9.2)")
+	if !got.StatusChanged {
+		t.Error("Stale→Open is a transition the operator asked to be notified about and must set StatusChanged (TDD 9.2)")
 	}
 }
 
-// TestWasJudgedFalseWhenBucketUnchanged covers the negative case: a PR that
-// stays in the same bucket (even if freshly judged, even if unverified) does
-// not set WasJudged — only an actual transition does.
-func TestWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
+// TestStatusChangedFalseWhenBucketUnchanged covers the negative case: a PR that
+// stays in the same bucket AND whose disposition is unchanged (the prior
+// stored record reproduces this run's judged signature exactly) does not set
+// StatusChanged — there is genuinely nothing to notify about.
+func TestStatusChangedFalseWhenSignatureUnchanged(t *testing.T) {
 	now := time.Now()
-	prior := model.PR{Repo: "o/n", Number: 64, Role: model.RoleSubmitter, Bucket: model.BucketOpen}
+	// The prior record carries the exact disposition this run will judge, so
+	// the signatures match and no change is reported.
+	prior := model.PR{
+		Repo: "o/n", Number: 64, Role: model.RoleSubmitter, Bucket: model.BucketOpen,
+		Action: model.ActionChangesRequested, Priority: model.PriorityNeutral,
+		Companion: "still open awaiting changes", Emoji: "🔄", LastActivity: now,
+	}
 	c, _ := unchangedOpenClassifierWithPrior(
-		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"still open","emoji":"🔄"}`,
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"still open awaiting changes","emoji":"🔄"}`,
 		now, map[string]model.PR{prior.Key(): prior})
 
 	fresh := model.PR{
@@ -849,17 +856,56 @@ func TestWasJudgedFalseWhenBucketUnchanged(t *testing.T) {
 	if got.Bucket != model.BucketOpen {
 		t.Fatalf("expected open bucket, got %q", got.Bucket)
 	}
-	if got.WasJudged {
-		t.Error("Open→Open is not a transition and must not set WasJudged, even though the provider was freshly consulted")
+	if got.StatusChanged {
+		t.Error("an unchanged signature (same bucket, same disposition, same activity) must not set StatusChanged, even though the provider was freshly consulted")
 	}
 }
 
-// TestWasJudgedFalseOnFirstSeenPR covers the first-seen case: a PR with no
+// TestStatusChangedOnWithinBucketDispositionChange covers TDD 9.2's core
+// reversal: a PR whose bucket does not move but whose disposition does — here a
+// reviewer PR that gains a pending review request, becoming awaiting_review
+// while staying open — is notification-worthy, because the operator's notion of
+// "changed" is the whole status, not the bucket alone (ANTI-PATTERNS #13).
+func TestStatusChangedOnWithinBucketDispositionChange(t *testing.T) {
+	now := time.Now()
+	// Prior: an open reviewer PR the operator had already seen, where the
+	// reviewer had previously requested changes.
+	prior := model.PR{
+		Repo: "o/n", Number: 66, Role: model.RoleReviewer, Bucket: model.BucketOpen,
+		Action: model.ActionChangesRequested, Priority: model.PriorityNeutral,
+		Companion: "changes requested earlier", LastActivity: now.Add(-time.Hour),
+	}
+	c, _ := unchangedOpenClassifierWithPrior(
+		`{"bucket":"open","action":"changes_requested","priority":"neutral","companion":"changes requested earlier","emoji":"🔄"}`,
+		now, map[string]model.PR{prior.Key(): prior})
+
+	// Fresh: GitHub now has a pending review request on the operator — the
+	// deterministic reviewerAwaiting override marks it awaiting_review, a
+	// within-open disposition change, with newer activity.
+	fresh := model.PR{
+		Repo: "o/n", Number: 66, Role: model.RoleReviewer, GitHubState: model.GitHubStateOpen,
+		ReviewRequested: true, Created: now.Add(-2 * time.Hour), LastActivity: now,
+		Events: []model.Event{{Timestamp: now, Kind: model.EventReviewRequested, Text: "please review"}},
+	}
+	got := c.classifyOne(context.Background(), fresh)
+
+	if got.Bucket != model.BucketOpen {
+		t.Fatalf("expected bucket to stay open, got %q", got.Bucket)
+	}
+	if got.Action != model.ActionAwaitingReview {
+		t.Fatalf("expected awaiting_review from the review-request override, got %q", got.Action)
+	}
+	if !got.StatusChanged {
+		t.Error("a within-bucket disposition change (a review request landing) is notification-worthy and must set StatusChanged (TDD 9.2)")
+	}
+}
+
+// TestStatusChangedFalseOnFirstSeenPR covers the first-seen case: a PR with no
 // prior stored record is not a "transition" — 9.1's existing first-seen
 // handling already surfaces it via the classification population itself, and
-// WasJudged staying false here is correct (there is nothing to have
+// StatusChanged staying false here is correct (there is nothing to have
 // transitioned from).
-func TestWasJudgedFalseOnFirstSeenPR(t *testing.T) {
+func TestStatusChangedFalseOnFirstSeenPR(t *testing.T) {
 	now := time.Now()
 	c := testClassifier(
 		`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"nothing further to report","emoji":"⏳"}`,
@@ -870,7 +916,7 @@ func TestWasJudgedFalseOnFirstSeenPR(t *testing.T) {
 		Events: []model.Event{{Timestamp: now, Kind: model.EventComment, Text: "brand new"}},
 	}
 	got := c.classifyOne(context.Background(), fresh)
-	if got.WasJudged {
-		t.Error("a first-seen PR has no prior bucket to transition from and must not set WasJudged")
+	if got.StatusChanged {
+		t.Error("a first-seen PR has no prior bucket to transition from and must not set StatusChanged")
 	}
 }

@@ -71,11 +71,11 @@ type Issue struct {
 	// Events is the chronological event trail. Not persisted.
 	Events []Event `yaml:"-" json:"-"`
 
-	// WasJudged is true when this run's classification actually reached the
-	// provider for a fresh judgment, mirroring model.PR's field for the same
-	// reason (TDD 8.8, 8.9, 9.1) — a run-local signal for the notification
-	// hook's change collection, never persisted.
-	WasJudged bool `yaml:"-" json:"-"`
+	// StatusChanged is true when this run's status signature for the issue
+	// differs from that of its prior stored record, mirroring model.PR's field
+	// for the same reason (TDD 9.1, 9.2) — a run-local signal for the
+	// notification hook's change collection, never persisted.
+	StatusChanged bool `yaml:"-" json:"-"`
 }
 
 // Key uniquely identifies an issue across the tracked set and the store. It

@@ -49,13 +49,13 @@ func (c *Classifier) ClassifyIssues(ctx context.Context, issues []model.Issue) [
 
 // classifyIssue classifies a single issue. The closed floor is deterministic and
 // is applied before any inference (TDD 8.2); an open issue's disposition comes
-// from the trail only when there is a trail worth reading (TDD 8.3). WasJudged
-// is then set centrally from the one signal that matters for the notification
-// hook: whether this run's bucket differs from the prior stored bucket
-// (TDD 9.2), mirroring classifyOne for PRs — computed once here rather than
-// duplicated in each dispatch path.
+// from the trail only when there is a trail worth reading (TDD 8.3).
+// StatusChanged is then set centrally from the one signal that matters for the
+// notification hook: whether this run's status signature differs from the prior
+// stored record's (TDD 9.1, 9.2), mirroring classifyOne for PRs — computed once
+// here rather than duplicated in each dispatch path.
 func (c *Classifier) classifyIssue(ctx context.Context, iss model.Issue) model.Issue {
-	priorBucket, hadPrior := c.priorIssueBucket(iss.Key())
+	prior, hadPrior := c.priorIssues[iss.Key()]
 
 	var out model.Issue
 	if iss.GitHubClosed {
@@ -64,21 +64,11 @@ func (c *Classifier) classifyIssue(ctx context.Context, iss model.Issue) model.I
 		out = c.classifyIssueOpen(ctx, iss)
 	}
 
-	// A first-seen issue (no prior record) is not a transition — there is
-	// nothing to have transitioned from. Bucket changing to itself (nothing
-	// moved) never notifies either.
-	out.WasJudged = hadPrior && out.Bucket != priorBucket
+	// A first-seen issue (no prior record) is not a change — there is nothing
+	// to diff against. Otherwise it notifies when any part of its status moved
+	// this run, not only its bucket (TDD 9.2; ANTI-PATTERNS #13).
+	out.StatusChanged = hadPrior && issueStatusSignature(out) != issueStatusSignature(prior)
 	return out
-}
-
-// priorIssueBucket returns the prior stored bucket for key, and whether a
-// prior record existed at all.
-func (c *Classifier) priorIssueBucket(key string) (model.IssueBucket, bool) {
-	old, ok := c.priorIssues[key]
-	if !ok {
-		return "", false
-	}
-	return old.Bucket, true
 }
 
 // classifyIssueClosed applies the immutable closed floor. Unlike a PR's closed
@@ -173,9 +163,9 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		// carried verdict rather than being re-stamped (TDD 6.16, mirroring the
 		// PR path).
 		iss.Provider = old.Provider
-		// WasJudged is computed centrally in classifyIssue from the
-		// prior/fresh bucket comparison (TDD 9.2) — this carried-forward
-		// bucket is identical to the prior stored one by construction.
+		// StatusChanged is computed centrally in classifyIssue from the
+		// prior/fresh signature diff (TDD 9.1) — this carried-forward record
+		// reproduces the prior stored disposition by construction.
 		return iss
 	}
 
@@ -193,10 +183,9 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 		c.log.Warn("issue classification unverified", "issue", iss.Key(), "attempts", res.Attempts, "reason", res.Err)
 		// Deliberately not stamping InputFingerprint here: an unverified result
 		// must never be treated as a cached judgment on a later run (TDD 8.8, 8.9).
-		// WasJudged is computed centrally in classifyIssue from the
-		// prior/fresh bucket comparison (TDD 9.2) — an unverified issue that
-		// stays open (the common case) is not a transition and correctly does
-		// not notify.
+		// StatusChanged is computed centrally in classifyIssue from the
+		// prior/fresh signature diff (TDD 9.1) — an unverified issue whose
+		// disposition lands where it already was does not notify.
 		return iss
 	}
 
@@ -239,10 +228,10 @@ func (c *Classifier) classifyIssueOpen(ctx context.Context, iss model.Issue) mod
 	// Stamp the fingerprint of the inputs that produced this judgment, so a
 	// later run can detect "unchanged" and skip the provider call (TDD 8.8).
 	iss.InputFingerprint = issueFingerprint(iss)
-	// WasJudged is computed centrally in classifyIssue from the prior/fresh
-	// bucket comparison (TDD 9.2) — landing in Stale this run DOES notify
-	// when it is a genuine transition from Open, unlike the narrower
-	// open-only rule this used to be.
+	// StatusChanged is computed centrally in classifyIssue from the prior/fresh
+	// signature diff (TDD 9.1) — a genuine Open→Stale move changes the bucket
+	// component and notifies, as does any within-bucket disposition change the
+	// old bucket-only rule missed (TDD 9.2).
 	return iss
 }
 
