@@ -141,6 +141,16 @@ func buildPrompt(req Request, correction string) (string, error) {
 		b.WriteString("uncleared flag. Honor the immutable floors: if github_state is \"merged\" the ")
 		b.WriteString("bucket must be \"merged\"; if \"closed\" the bucket must be \"closed\".\n\n")
 	}
+	if req.Operator != "" {
+		b.WriteString(fmt.Sprintf(
+			"The operator (the person this dashboard is for) is the GitHub user %q. "+
+				"In the event trail, an author matching that login is the operator themselves; "+
+				"any other author is someone else. Use this to judge whose court the ball is in: "+
+				"an unresolved thread or question the operator raised is waiting on the other party "+
+				"to respond, not on the operator, and the operator having already reviewed or "+
+				"approved means the next move is not theirs unless someone has since asked them "+
+				"for something.\n\n", req.Operator))
+	}
 	b.WriteString("Input (JSON):\n")
 	b.Write(payload)
 	b.WriteString("\n\n")

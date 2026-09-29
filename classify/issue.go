@@ -310,6 +310,7 @@ func (c *Classifier) judgeIssue(ctx context.Context, iss model.Issue) provider.R
 		Repo:        iss.Repo,
 		Number:      iss.Number,
 		Role:        string(iss.Role),
+		Operator:    c.operator,
 		State:       state,
 		Events:      iss.Events,
 		Constraints: provider.IssueConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),

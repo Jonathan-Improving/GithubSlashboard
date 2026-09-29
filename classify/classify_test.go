@@ -32,7 +32,7 @@ func testClassifier(out string, now time.Time) *Classifier {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// nil prior: every existing test's PR is first-seen, so it must always
 	// reach the provider (TDD 4.14) regardless of the new skip behavior.
-	return New(fixedProvider{out: out}, nil, cfg, log, func() time.Time { return now }, nil, nil)
+	return New(fixedProvider{out: out}, nil, cfg, log, func() time.Time { return now }, nil, nil, "")
 }
 
 // countingProvider records how many times it was invoked.
@@ -144,7 +144,7 @@ func TestSkipFloorNotesAvoidsProviderForFloors(t *testing.T) {
 	cfg.SkipFloorNotes = true // fast path
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"merged","priority":"neutral","companion":"three word note","emoji":"✅"}`}
-	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil)
+	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil, "")
 
 	prs := []model.PR{
 		{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateMerged, Role: model.RoleSubmitter},
@@ -174,9 +174,13 @@ func TestSkipFloorNotesStillClassifiesOpen(t *testing.T) {
 	cfg.SkipFloorNotes = true
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting on a reviewer","emoji":"✅"}`}
-	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil)
+	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil, "")
 
-	pr := model.PR{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateOpen, Role: model.RoleReviewer, Created: now, LastActivity: now}
+	// A submitter PR: an open PR still needs the model even under skip-floor-notes.
+	// (Submitter, not reviewer, because a reviewer PR's inferred awaiting_review
+	// without a live pending request is now deterministically demoted — TDD 4.8a
+	// — which is a separate concern from this test's point about the fast path.)
+	pr := model.PR{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter, Created: now, LastActivity: now}
 	got := c.classifyOne(context.Background(), pr)
 	if cp.calls != 1 {
 		t.Errorf("provider called %d times for an open PR, want 1 (open still needs the model)", cp.calls)
@@ -434,7 +438,7 @@ func TestCarriedTerminalPreservesCachedNotesNoProviderCall(t *testing.T) {
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: `{"bucket":"merged","priority":"neutral","companion":"three word note","emoji":"✅"}`}
-	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil)
+	c := New(cp, nil, cfg, log, func() time.Time { return now }, nil, nil, "")
 
 	merged := model.PR{Repo: "o/n", Number: 1, GitHubState: model.GitHubStateMerged, Role: model.RoleSubmitter,
 		Bucket: model.BucketMerged, Priority: model.PriorityElevated, Companion: "shipped in v2", Emoji: "🚀"}
@@ -534,7 +538,7 @@ func unchangedOpenClassifierWithPrior(out string, now time.Time, prior map[strin
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cp := &countingProvider{out: out}
-	return New(cp, nil, cfg, log, func() time.Time { return now }, prior, nil), cp
+	return New(cp, nil, cfg, log, func() time.Time { return now }, prior, nil, ""), cp
 }
 
 // freshUnchangedPR and priorUnchangedPR build a matching first-run/second-run

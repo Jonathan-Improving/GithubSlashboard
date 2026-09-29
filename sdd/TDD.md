@@ -166,7 +166,11 @@ reference them by name.
     ball-holding —
     `Awaiting Our Action` and `💡 Open — Review Submitted` (Repo | PR | Title |
     Updated | Our Review), and `✅ Done - Closed / Merged` (Repo | PR | Title |
-    Outcome | Notes)
+    Outcome | Notes). A reviewer PR is placed in "Awaiting Our Action" only when
+    its persisted disposition reflects a live pending review request on the
+    operator (4.8, 4.8a) — never on a model-inferred `awaiting_review` for a PR
+    GitHub is not actually asking us to review; such a PR renders under "Open —
+    Review Submitted"
   - an **Updated column** on every table whose rows are still live (submitter
     Open and Stale, both reviewer open tables, and the issue active and stale
     tables), reporting whole days since the item's last trail activity in the
@@ -368,7 +372,30 @@ reference them by name.
   of age, since GitHub is actively asking us to act
 - **Note** the request is a hard fact, so it surfaces even on a row that fell to
   `unverified`; a reviewer PR with no pending request keeps the model's inferred
-  action (the ball may rightly be on the author)
+  disposition for its note and nuance, but never lands in the "Awaiting Our
+  Action" table on the strength of an inferred `awaiting_review` alone (4.8a)
+
+### 4.8a A reviewer PR is in our court only on a live request, never on inference
+- **Given** an open PR the operator was asked to review that GitHub does **not**
+  currently show a pending review request on the operator for (no "please review"
+  banner) — for example one the operator has already reviewed and approved, whose
+  only outstanding thread is one the operator themselves raised and the author
+  has yet to answer
+- **When** classified and rendered
+- **Then** it is **not** placed in the reviewer "Awaiting Our Action" table, even
+  if the model inferred `awaiting_review` from the trail: whether the ball is in
+  the operator's court as a reviewer is decided by the hard GitHub fact of a live
+  pending review request (4.8), not by model inference. Absent that request the
+  PR renders under "Open — Review Submitted" (the author owes the next move)
+- **And** the model's inferred note and emoji are preserved, so any nuance it
+  found still reaches the reader — only the ball-holding placement is corrected
+- **Note** this mirrors the deterministic philosophy of 4.8/4.9: "the ball is
+  with us" for a reviewer PR is a fact GitHub asserts (a pending request), not a
+  disposition a model may guess. A reviewer's own unresolved thread after their
+  approval is by definition waiting on the author, so surfacing it as awaiting
+  *our* action inverts whose court it is in — the exact regression this guards.
+  Unlike 4.9 (submitter, unresolved threads → author owes), this needs no
+  per-thread authorship data: the absence of a pending request is sufficient
 
 ### 4.9 A submitter PR with unresolved review threads needs the author to act
 - **Given** an open PR the operator authored that carries one or more review

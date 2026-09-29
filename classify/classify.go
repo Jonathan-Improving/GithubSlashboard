@@ -36,6 +36,10 @@ type Classifier struct {
 	now         func() time.Time
 	prior       map[string]model.PR
 	priorIssues map[string]model.Issue
+	// operator is the operator's own GitHub login, passed into every provider
+	// request so the model can identify the operator's own events in the trail
+	// when judging whose court the ball is in (SCHEMA § Request operator).
+	operator string
 }
 
 // New builds a Classifier. fallback may be nil (no fallback configured,
@@ -44,12 +48,14 @@ type Classifier struct {
 // key (TDD 4.13), and priorIssues the existing issue records keyed by issue key
 // (TDD 8.8); pass nil or an empty map for either when there is no prior store
 // (e.g. first run) — every item is then treated as first-seen and reaches the
-// provider.
-func New(prov, fallback provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR, priorIssues map[string]model.Issue) *Classifier {
+// provider. operator is the operator's own GitHub login, forwarded to the
+// provider so the model can identify the operator's own trail events (SCHEMA §
+// Request operator); pass "" when unknown.
+func New(prov, fallback provider.Provider, cfg config.Config, log *slog.Logger, now func() time.Time, prior map[string]model.PR, priorIssues map[string]model.Issue, operator string) *Classifier {
 	if now == nil {
 		now = time.Now
 	}
-	return &Classifier{prov: prov, fallback: fallback, cfg: cfg, log: log, now: now, prior: prior, priorIssues: priorIssues}
+	return &Classifier{prov: prov, fallback: fallback, cfg: cfg, log: log, now: now, prior: prior, priorIssues: priorIssues, operator: operator}
 }
 
 // ClassifyAll classifies every PR, bounding provider fan-out by the configured
@@ -244,6 +250,12 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// re-stamped (TDD 6.16) — obvious once stated: this row's Provider
 		// value has not changed just because the run happened to execute.
 		pr.Provider = old.Provider
+		// Reviewer ball-holding is a hard fact, not inference (TDD 4.8a): correct
+		// a value cached before this rule existed rather than perpetuating it via
+		// the cache. The fingerprint includes ReviewRequested, so a genuinely
+		// live request that later clears already forces a re-judge; this only
+		// catches the inference-cached case where the request was never live.
+		demoteReviewerAwaitingReview(&pr)
 		// StatusChanged is computed centrally in classifyOne from the
 		// prior/fresh signature diff (TDD 9.1) — this carried-forward record
 		// reproduces the prior stored disposition field-for-field by
@@ -280,6 +292,11 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		if reviewerAwaiting(pr) {
 			pr.Action = model.ActionAwaitingReview
 		}
+		// A reviewer PR with no live request must not default into our court on
+		// the raw-flag fallback (TDD 4.8a): the awaiting_review fallback above is
+		// meaningful only for a submitter PR. Runs after the reviewerAwaiting
+		// promotion so a genuine live request is preserved.
+		demoteReviewerAwaitingReview(&pr)
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
 		// Neither provider produced a usable verdict, so there is no real
@@ -334,6 +351,13 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		pr.Bucket = model.BucketOpen
 		pr.Action = respAction
 	}
+
+	// Reviewer ball-holding is a hard GitHub fact, not an inference (TDD 4.8a):
+	// demote a reviewer PR's inferred `awaiting_review` to `author_active` when
+	// GitHub is not actually asking us to review, so it does not wrongly land in
+	// "Awaiting Our Action". Runs before the reviewerAwaiting override below,
+	// which re-promotes it only when a live pending request truly exists.
+	demoteReviewerAwaitingReview(&pr)
 
 	// Deterministic review-feedback override (submitter only). Unresolved review
 	// threads are outstanding line comments the author has not answered — a hard
@@ -413,6 +437,22 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 // for treating it as awaiting our action.
 func reviewerAwaiting(pr model.PR) bool {
 	return pr.Role == model.RoleReviewer && pr.ReviewRequested
+}
+
+// demoteReviewerAwaitingReview enforces TDD 4.8a: an open reviewer PR whose
+// action is `awaiting_review` but which has no live pending review request must
+// not sit in the operator's court, because "the ball is with us" for a reviewer
+// is a hard GitHub fact (a pending request), not a value a model may infer. It
+// is demoted to `author_active` (the author owes the next move) so it renders
+// under "Open — Review Submitted". A PR that genuinely has a live request is
+// left alone here and (re-)promoted by the reviewerAwaiting override. Applied on
+// every path that can set a reviewer PR's action: the verified judgment, the
+// unverified fallback, and the carried-forward cache.
+func demoteReviewerAwaitingReview(pr *model.PR) {
+	if pr.Bucket == model.BucketOpen && pr.Role == model.RoleReviewer &&
+		pr.Action == model.ActionAwaitingReview && !reviewerAwaiting(*pr) {
+		pr.Action = model.ActionAuthorActive
+	}
 }
 
 // submitterFeedbackPending reports whether pr is a submitter-authored PR with
@@ -531,6 +571,7 @@ func (c *Classifier) judge(ctx context.Context, pr model.PR, state model.GitHubS
 		Repo:        pr.Repo,
 		Number:      pr.Number,
 		Role:        string(pr.Role),
+		Operator:    c.operator,
 		State:       string(state),
 		Events:      pr.Events,
 		Constraints: provider.ConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),

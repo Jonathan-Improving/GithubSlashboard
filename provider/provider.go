@@ -41,6 +41,12 @@ type Request struct {
 	// PR, author/participant for an issue). The valid values are named in
 	// Constraints.
 	Role string `json:"role"`
+	// Operator is the operator's own GitHub login. It lets the model identify
+	// which event-trail authors are the operator themselves versus other
+	// people, so it can judge whose court the ball is in — e.g. an unresolved
+	// thread the operator raised is waiting on the author, not on the operator.
+	// Empty when unknown; the model then falls back to the role/trail alone.
+	Operator string `json:"operator,omitempty"`
 	// State is the raw upstream state, so the model honors the immutable floors.
 	// Carried as a plain string for the same reason as Role: an issue has no
 	// merged state.

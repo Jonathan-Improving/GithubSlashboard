@@ -26,7 +26,7 @@ func classifierWithFallback(primary, fallback provider.Provider, now time.Time) 
 	cfg.GitHubToken = "tok"
 	cfg.SkipFloorNotes = false
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(primary, fallback, cfg, log, func() time.Time { return now }, nil, nil)
+	return New(primary, fallback, cfg, log, func() time.Time { return now }, nil, nil, "")
 }
 
 // TestProviderSetPrimaryOnSuccessfulOpenJudgment covers TDD 6.16: a normal

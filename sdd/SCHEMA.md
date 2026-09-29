@@ -397,6 +397,7 @@ in the trail, so the latest authoritative event governs (TDD 4.4).
 | `repo` | `string` | yes | `owner/name`. |
 | `number` | `int` | yes | PR or issue number. |
 | `role` | `string` | yes | Operator's relationship to the item. Entity-specific: `submitter`/`reviewer` for a PR, `author`/`participant` for an issue. Valid values are named in `constraints.roles`. |
+| `operator` | `string` | no | The operator's own GitHub login. Lets the model tell which event-trail authors are the operator versus other people, so it can judge whose court the ball is in — an unresolved thread or question the operator raised waits on the other party, not on the operator, and the operator having already reviewed means the next move is not theirs unless someone has since asked them for something. Omitted when unknown, in which case the model falls back to `role` and the trail alone. |
 | `github_state` | `string` | yes | Raw upstream state, so the model honors the immutable floors. `open`/`closed`/`merged` for a PR (draft is not a state here — it is an open-PR sub-attribute that flows through the trail as ready/draft transitions, TDD 4.4); `open`/`closed` for an issue, which has no merged state. |
 | `events` | `event[]` | yes | Chronological event trail. |
 | `constraints` | `object` | yes | The word bounds and the valid enum vocabularies **this entity's** response must satisfy. |
