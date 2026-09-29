@@ -133,9 +133,15 @@ func (c *Client) FetchTracked(ctx context.Context, prior map[string]model.PR, in
 		// the terminal state will not change (TDD 1.5).
 		if !includeTerminal {
 			if old, ok := prior[k]; ok && (old.Bucket == model.BucketMerged || old.Bucket == model.BucketClosed) {
-				// Preserve the role we just discovered (submitter wins), but
-				// otherwise the prior record is authoritative and skips GitHub.
+				// The prior record is authoritative for the judged verdict and
+				// skips GitHub, but role is re-derived every run from the fresh
+				// searches (submitter wins), not carried from the stored record.
+				// A terminal PR whose stored role is stale — e.g. one written as
+				// reviewer during a timed-out author: search (ANTI-PATTERNS #11),
+				// which the searches now correctly resolve as submitter — must
+				// self-correct rather than stay wrong forever behind the skip.
 				carried := old
+				carried.Role = p.Role
 				// GitHubState is not persisted; restore it from the cached
 				// bucket so classification routes the carried record to the
 				// correct immutable-floor handler (not the open path).

@@ -145,3 +145,55 @@ func TestFetchTrackedNeverMisassignsRoleOnIncompleteAuthoredSearch(t *testing.T)
 		t.Errorf("error %q should mention incomplete results", err)
 	}
 }
+
+// TestFetchTrackedRestampsRoleOnCarriedTerminal is the regression for the
+// residual half of the ANTI-PATTERNS #11 defect: once a terminal (merged or
+// closed) PR is persisted with the wrong role, the terminal-skip carry-forward
+// must still re-derive role from the fresh searches rather than carry the stale
+// stored value forever. Here the store holds octo/example#295 as
+// reviewer/merged, while the fresh author: search correctly returns it — so the
+// submitter-wins merge resolves submitter, and the carried record must come out
+// as submitter, not the stored reviewer. No per-PR crawl happens on this path,
+// so the search server alone is enough.
+func TestFetchTrackedRestampsRoleOnCarriedTerminal(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch {
+		case strings.Contains(q, "author:"):
+			_, _ = w.Write([]byte(searchIssuesResponse(false, 295)))
+		default:
+			_, _ = w.Write([]byte(searchIssuesResponse(false)))
+		}
+	}))
+	defer ts.Close()
+
+	c := newTestSearchClient(t, ts)
+	prior := map[string]model.PR{
+		"octo/example#295": {
+			Repo: "octo/example", Number: 295,
+			Role: model.RoleReviewer, Bucket: model.BucketMerged,
+		},
+	}
+
+	out, err := c.FetchTracked(t.Context(), prior, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("FetchTracked: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want the single carried PR, got %d", len(out))
+	}
+	got := out[0]
+	if got.Number != 295 {
+		t.Fatalf("wrong PR carried: %+v", got)
+	}
+	if got.Role != model.RoleSubmitter {
+		t.Errorf("carried terminal role must be re-derived to submitter, got %v", got.Role)
+	}
+	if got.Bucket != model.BucketMerged {
+		t.Errorf("carried terminal bucket must be preserved as merged, got %v", got.Bucket)
+	}
+	if got.GitHubState != model.GitHubStateMerged {
+		t.Errorf("carried terminal GitHubState must be restored to merged, got %v", got.GitHubState)
+	}
+}
