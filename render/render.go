@@ -1,8 +1,9 @@
 // Package render is a pure function from the store to the Markdown status
 // document (TDD 3). It renders a role-based
-// summary table, a Submitter section split into Open / Stale / Merged / Closed
-// tables, and a Reviewer section split by ball-holding (Awaiting Our Action /
-// Open — Review Submitted) plus a Done table. The Markdown is never a source of
+// summary table, a Submitter section whose live Open bucket is split by
+// ball-holding (Awaiting Our Action / Open — Awaiting Review) alongside Stale /
+// Merged / Closed tables, and a Reviewer section split by ball-holding
+// (Awaiting Our Action / Open — Review Submitted) plus a Done table. The Markdown is never a source of
 // truth and is never read back (POLICY; TDD 3.3): given an unchanged store and
 // reference time the output is byte-identical except for the supplied Last
 // Updated value (TDD 3.4).
@@ -170,8 +171,11 @@ func bucketCounts(prs []model.PR) (open, stale, merged, closed int) {
 	return
 }
 
-// writeSubmitterSection emits the four mutually-exclusive submitter tables in
-// the established order: Open, Stale, Merged, Closed.
+// writeSubmitterSection emits the submitter tables. The live Open bucket is
+// split by ball-holding — Awaiting Our Action (the author owes the next move)
+// and 💡 Open — Awaiting Review (the ball is with reviewers) — mirroring the
+// reviewer section (TDD 3.1, 4.12). Stale, Merged, and Closed stay single
+// buckets in the established order.
 func writeSubmitterSection(b *strings.Builder, prs []model.PR, pinnedKeys map[string]bool, now time.Time) {
 	if len(prs) == 0 {
 		b.WriteString("_No pull requests._\n\n")
@@ -183,19 +187,26 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, pinnedKeys map[st
 	merged := selectTerminalBucket(prs, model.BucketMerged)
 	closed := selectTerminalBucket(prs, model.BucketClosed)
 
-	// 💡 Open — Repo | PR | Title | Created | Age | Updated | Action Needed
-	b.WriteString(fmt.Sprintf("## %s Open (%d)\n\n", secOpen, len(open)))
-	if len(open) > 0 {
-		b.WriteString("| Repo | PR | Title | Created | Age | Updated | Action Needed |\n")
-		b.WriteString("|------|-----|-------|---------|-----|---------|----------------|\n")
-		for _, p := range open {
-			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
-				escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
-				p.Created.Format(dateLayout), age(now, p.Created),
-				updated(now, p.LastActivity), actionNeededCell(p)))
+	var awaitingUs, awaitingReview []model.PR
+	for _, p := range open {
+		if ballWithSubmitter(p) {
+			awaitingUs = append(awaitingUs, p)
+		} else {
+			awaitingReview = append(awaitingReview, p)
 		}
-		b.WriteString("\n")
 	}
+
+	// Awaiting Our Action — the author owes the next move (changes requested,
+	// conflicts, blocked merge, unresolved feedback, ready-to-merge, or a red
+	// build). Same columns as the Awaiting Review table so a row keeps its full
+	// Action Needed cell wherever it lands.
+	b.WriteString(fmt.Sprintf("## Awaiting Our Action (%d)\n\n", len(awaitingUs)))
+	writeSubmitterOpenTable(b, awaitingUs, pinnedKeys, now)
+
+	// 💡 Open — Awaiting Review — the ball is with reviewers (awaiting review or
+	// blocked externally); nothing for the author to do right now.
+	b.WriteString(fmt.Sprintf("## %s Open — Awaiting Review (%d)\n\n", secOpen, len(awaitingReview)))
+	writeSubmitterOpenTable(b, awaitingReview, pinnedKeys, now)
 
 	// ☠ Stale — Repo | PR | Title | Created | Age | Updated | Reason
 	b.WriteString(fmt.Sprintf("## %s Stale (%d)\n\n", secStale, len(stale)))
@@ -236,6 +247,27 @@ func writeSubmitterSection(b *strings.Builder, prs []model.PR, pinnedKeys map[st
 		}
 		b.WriteString("\n")
 	}
+}
+
+// writeSubmitterOpenTable emits one of the two split submitter Open tables
+// (Awaiting Our Action / Open — Awaiting Review). Both carry the identical
+// column set, so a row keeps its full Action Needed cell — including the 🚧 CI
+// mark and the conflict/block/feedback prefixes — wherever the ball-holding
+// split places it. An empty slice emits only the heading its caller already
+// wrote, matching how the Stale/Merged/Closed tables suppress an empty body.
+func writeSubmitterOpenTable(b *strings.Builder, rows []model.PR, pinnedKeys map[string]bool, now time.Time) {
+	if len(rows) == 0 {
+		return
+	}
+	b.WriteString("| Repo | PR | Title | Created | Age | Updated | Action Needed |\n")
+	b.WriteString("|------|-----|-------|---------|-----|---------|----------------|\n")
+	for _, p := range rows {
+		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
+			escapePipes(p.Repo), prNumLink(p, pinnedKeys), escapePipes(p.Title),
+			p.Created.Format(dateLayout), age(now, p.Created),
+			updated(now, p.LastActivity), actionNeededCell(p)))
+	}
+	b.WriteString("\n")
 }
 
 // writeReviewerSection emits the reviewer tables split by ball-holding: PRs
@@ -345,6 +377,34 @@ func writeReviewerSection(b *strings.Builder, prs []model.PR, pinnedKeys map[str
 // through the 🚧 mark on its Action Needed cell instead (TDD 4.12).
 func ballWithUs(p model.PR) bool {
 	return p.Action == model.ActionAwaitingReview || p.Action == model.ActionUnassigned
+}
+
+// ballWithSubmitter reports whether an open PR the operator *authored* is
+// awaiting their own action rather than the reviewers'. The author owes the
+// next move when changes were requested, they are mid-iteration, the branch
+// conflicts, merge is blocked by an unmet requirement, review feedback is
+// unresolved, the PR is approved and ready for them to merge, or no reviewer is
+// assigned — and, orthogonally, whenever the build is red, a PR they authored
+// is theirs to fix (TDD 4.12). The ball is with reviewers only when the PR is
+// awaiting review or blocked on something external the author cannot move.
+//
+// Unlike the reviewer split (ballWithUs), which rests on a live GitHub
+// review-request fact, several of these actions are model-inferred for an
+// authored PR; the CI flag and the conflict/block/feedback actions are hard
+// GitHub facts. CIFailing is submitter-scoped, so it is meaningful here (it is
+// always false on the reviewer PRs ballWithUs sees).
+func ballWithSubmitter(p model.PR) bool {
+	if p.CIFailing {
+		return true
+	}
+	switch p.Action {
+	case model.ActionChangesRequested, model.ActionAuthorActive, model.ActionConflicted,
+		model.ActionMergeBlocked, model.ActionReviewFeedback, model.ActionMergeReady,
+		model.ActionUnassigned:
+		return true
+	default: // awaiting_review, blocked_external
+		return false
+	}
 }
 
 // actionNeededCell renders the submitter Open "Action Needed" cell: the

@@ -15,13 +15,18 @@ _Last Updated: 2026-05-14 09:30:00 UTC_
 
 # Submitter: PRs I Authored
 
-## 💡 Open (3)
+## Awaiting Our Action (2)
 
 | Repo | PR | Title | Created | Age | Updated | Action Needed |
 |------|-----|-------|---------|-----|---------|----------------|
 | acme/api-gateway | [#418](https://github.com/acme/api-gateway/pull/418) | feat: add request coalescing to the edge cache | 2026-05-05 | 9d | 1d | 🔺 🔴 unresolved review feedback — two reviewers left comments to address |
 | acme/api-gateway | [#421](https://github.com/acme/api-gateway/pull/421) | chore: bump tracing library to 1.9 | 2026-05-10 | 4d | 0d | 🚧 🔧 rebasing after upstream release |
-| acme/widget-service | [#77](https://github.com/acme/widget-service/pull/77) | fix: retry idempotency key on 409 | 2026-05-08 | 6d | 2d | ✅ approved and green, awaiting merge |
+
+## 💡 Open — Awaiting Review (1)
+
+| Repo | PR | Title | Created | Age | Updated | Action Needed |
+|------|-----|-------|---------|-----|---------|----------------|
+| acme/widget-service | [#77](https://github.com/acme/widget-service/pull/77) | fix: retry idempotency key on 409 | 2026-05-08 | 6d | 2d | ⏳ submitted for review, awaiting a first pass |
 
 ## ☠ Stale (1)
 

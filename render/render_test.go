@@ -45,9 +45,19 @@ func TestSummaryRoleBased(t *testing.T) {
 
 func TestSubmitterSectionsAndColumns(t *testing.T) {
 	md := Render(sample(), nil, nil, "x", refNow)
+	// Sample PR #1 is changes_requested, so under the ball-holding split it
+	// lands in the submitter Awaiting Our Action table, not Open — Awaiting
+	// Review. Scope the assertions to the submitter section so the heading does
+	// not collide with the reviewer section's identically-named table.
+	subStart := strings.Index(md, "# Submitter: PRs I Authored")
+	revStart := strings.Index(md, "# Reviewer: PRs I Reviewed")
+	if subStart < 0 || revStart < 0 || revStart < subStart {
+		t.Fatalf("sections missing or out of order (sub=%d rev=%d)\n%s", subStart, revStart, md)
+	}
+	sub := md[subStart:revStart]
 	for _, want := range []string{
-		"# Submitter: PRs I Authored",
-		"## 💡 Open (1)",
+		"## Awaiting Our Action (1)",
+		"## 💡 Open — Awaiting Review (0)",
 		"| Repo | PR | Title | Created | Age | Updated | Action Needed |",
 		"## 📦 Merged (1)",
 		"| Repo | PR | Title | Created | Merged | Notes |",
@@ -55,9 +65,76 @@ func TestSubmitterSectionsAndColumns(t *testing.T) {
 		"13d",        // age
 		"[#1](u1)",   // PR link form
 	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("submitter section missing %q\n%s", want, md)
+		if !strings.Contains(sub, want) {
+			t.Errorf("submitter section missing %q\n%s", want, sub)
 		}
+	}
+}
+
+// TestSubmitterOpenBallHoldingSplit covers TDD 3.1/4.12: the submitter live
+// Open bucket splits by ball-holding. Actions where the author owes the next
+// move land in Awaiting Our Action; awaiting_review / blocked_external land in
+// Open — Awaiting Review; and a red build forces our-action regardless of the
+// action value.
+func TestSubmitterOpenBallHoldingSplit(t *testing.T) {
+	created := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	mk := func(num int, title string, action model.Action, ci bool) model.PR {
+		return model.PR{Repo: "r/z", Number: num, Title: title, URL: "u", Role: model.RoleSubmitter,
+			Created: created, Bucket: model.BucketOpen, Action: action, CIFailing: ci,
+			Priority: model.PriorityNeutral, Companion: title}
+	}
+	prs := []model.PR{
+		mk(1, "changes-requested", model.ActionChangesRequested, false),
+		mk(2, "author-active", model.ActionAuthorActive, false),
+		mk(3, "conflicted", model.ActionConflicted, false),
+		mk(4, "merge-blocked", model.ActionMergeBlocked, false),
+		mk(5, "review-feedback", model.ActionReviewFeedback, false),
+		mk(6, "merge-ready", model.ActionMergeReady, false),
+		mk(7, "unassigned", model.ActionUnassigned, false),
+		mk(8, "ci-red-but-awaiting", model.ActionAwaitingReview, true),
+		mk(9, "awaiting-review", model.ActionAwaitingReview, false),
+		mk(10, "blocked-external", model.ActionBlockedExternal, false),
+	}
+	md := Render(prs, nil, nil, "x", refNow)
+
+	usStart := strings.Index(md, "## Awaiting Our Action")
+	reviewStart := strings.Index(md, "## 💡 Open — Awaiting Review")
+	staleStart := strings.Index(md, "## ☠ Stale")
+	if usStart < 0 || reviewStart < 0 || staleStart < 0 || !(usStart < reviewStart && reviewStart < staleStart) {
+		t.Fatalf("submitter split headings missing or out of order (us=%d review=%d stale=%d)\n%s",
+			usStart, reviewStart, staleStart, md)
+	}
+	ourAction := md[usStart:reviewStart]
+	awaitingReview := md[reviewStart:staleStart]
+
+	for _, title := range []string{"changes-requested", "author-active", "conflicted",
+		"merge-blocked", "review-feedback", "merge-ready", "unassigned", "ci-red-but-awaiting"} {
+		if !strings.Contains(ourAction, title) {
+			t.Errorf("%q should be in Awaiting Our Action\n%s", title, ourAction)
+		}
+		if strings.Contains(awaitingReview, title) {
+			t.Errorf("%q should not be in Open — Awaiting Review\n%s", title, awaitingReview)
+		}
+	}
+	for _, title := range []string{"awaiting-review", "blocked-external"} {
+		if !strings.Contains(awaitingReview, title) {
+			t.Errorf("%q should be in Open — Awaiting Review\n%s", title, awaitingReview)
+		}
+		if strings.Contains(ourAction, title) {
+			t.Errorf("%q should not be in Awaiting Our Action\n%s", title, ourAction)
+		}
+	}
+	// The counts in the headings must match the split (8 ours, 2 awaiting review).
+	if !strings.Contains(md, "## Awaiting Our Action (8)") {
+		t.Errorf("expected 8 rows in submitter Awaiting Our Action\n%s", md)
+	}
+	if !strings.Contains(md, "## 💡 Open — Awaiting Review (2)") {
+		t.Errorf("expected 2 rows in submitter Open — Awaiting Review\n%s", md)
+	}
+	// The summary still counts the whole Open bucket (10), unaffected by the
+	// render-side split.
+	if !strings.Contains(md, "| Submitter (PR) | 10 | 0 | 0 | 0 | 10 |") {
+		t.Errorf("summary Open count should be the whole bucket (10)\n%s", md)
 	}
 }
 

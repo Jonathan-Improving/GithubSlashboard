@@ -157,10 +157,15 @@ reference them by name.
     edits are overwritten) and a **role-based summary table** — one row per PR
     role (Submitter, Reviewer) with counts per bucket under 🟢 Open / 🟡 Stale /
     ✅ Merged / 🔴 Closed and a Total, followed by the issue rows described in 8.6
-  - a **Submitter section** (`# Submitter: PRs I Authored`) split into four
-    mutually-exclusive tables — `💡 Open` (Repo | PR | Title | Created | Age |
-    Updated | Action Needed), `☠ Stale` (… | Reason), `📦 Merged` (… | Created |
-    Merged | Notes), `⛔ Closed` (… | Created | Closed | Reason)
+  - a **Submitter section** (`# Submitter: PRs I Authored`) whose live Open
+    bucket is split by ball-holding into two tables with identical columns
+    (Repo | PR | Title | Created | Age | Updated | Action Needed) —
+    `Awaiting Our Action` (the author owes the next move) and
+    `💡 Open — Awaiting Review` (the ball is with reviewers) — followed by the
+    three single-bucket tables `☠ Stale` (… | Reason), `📦 Merged` (… | Created |
+    Merged | Notes), and `⛔ Closed` (… | Created | Closed | Reason). An open
+    authored PR is placed in "Awaiting Our Action" per 4.12; Stale is never
+    split, since a stale PR is one gone cold that the author cannot move
   - a **Reviewer section** (`# Reviewer: PRs I Reviewed`), preceded by a
     horizontal rule separating it from the Submitter section, split by
     ball-holding —
@@ -242,9 +247,9 @@ reference them by name.
 
 ### 3.6a Every live PR/issue table sorts by most recent activity
 - **Given** any table of items that have not reached a terminal state —
-  submitter Open, submitter Stale, reviewer Awaiting Our Action, reviewer
-  Open — Review Submitted, and the issue Authored/Participating active and
-  Stale sections
+  submitter Awaiting Our Action, submitter Open — Awaiting Review, submitter
+  Stale, reviewer Awaiting Our Action, reviewer Open — Review Submitted, and
+  the issue Authored/Participating active and Stale sections
 - **When** rendered
 - **Then** rows are ordered by `LastActivity` (the Updated column's own value)
   from most recent to least recent, not by repo/number — the item that moved
@@ -455,9 +460,20 @@ reference them by name.
   Needed value, because a broken build on a PR they authored is theirs to fix
 - **And** the mark is driven by the flag alone, requiring no particular Action
   Needed value, and appears in addition to (never instead of) the action's own mark
-- **Note** the submitter section is bucketed by status, not split by who owes the
-  next move, so this is expressed as a mark on the row rather than by moving the
-  row to a different table. The flag is submitter-scoped, so it never affects the
+- **And** the row is placed in the submitter `Awaiting Our Action` table whatever
+  its Action Needed value, since the author owes the fix; the flag alone is enough
+  to put the ball with them
+- **Note** the submitter live Open bucket is split by who owes the next move,
+  mirroring the reviewer section. An open authored PR is awaiting the operator's
+  action when the author owes the move — changes requested, mid-iteration, a
+  conflicting branch, a blocked merge, unresolved review feedback, approved and
+  ready for them to merge, or no reviewer assigned — or, independently, whenever
+  the build is red; otherwise (awaiting review, or blocked on something external
+  the author cannot move) the ball is with reviewers and it renders under
+  `💡 Open — Awaiting Review`. Unlike the reviewer split, which rests on a live
+  GitHub review-request fact, several of these dispositions are model-inferred for
+  an authored PR, while the CI flag and the conflict/block/feedback dispositions
+  are hard GitHub facts. The flag is submitter-scoped, so it never affects the
   reviewer section's ball-holding split
 
 ### 4.13 An unchanged open PR skips the provider call
