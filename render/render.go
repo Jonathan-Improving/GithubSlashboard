@@ -382,25 +382,34 @@ func ballWithUs(p model.PR) bool {
 // ballWithSubmitter reports whether an open PR the operator *authored* is
 // awaiting their own action rather than the reviewers'. The author owes the
 // next move when changes were requested, they are mid-iteration, the branch
-// conflicts, merge is blocked by an unmet requirement, review feedback is
-// unresolved, the PR is approved and ready for them to merge, or no reviewer is
-// assigned — and, orthogonally, whenever the build is red, a PR they authored
-// is theirs to fix (TDD 4.12). The ball is with reviewers only when the PR is
-// awaiting review or blocked on something external the author cannot move.
+// conflicts, review feedback is unresolved, the PR is approved and ready for
+// them to merge, or no reviewer is assigned — and, orthogonally, whenever the
+// build is red, a PR they authored is theirs to fix (TDD 4.12). The ball is
+// with reviewers only when the PR is awaiting review or blocked on something
+// external the author cannot move.
+//
+// Merge-blocked is a partial exception: `mergeable_state: blocked` only means
+// an unmet branch-protection requirement exists, not that resolving it is the
+// author's job (ISSUES § C) — the same hard fact also fires when a required
+// review simply has not been given yet by a reviewer who was already asked.
+// So merge-blocked only lands here when there is no reviewer GitHub is still
+// waiting to hear from; otherwise the ball is with that reviewer, same as a
+// plain awaiting_review PR (see PendingReviewers below).
 //
 // Unlike the reviewer split (ballWithUs), which rests on a live GitHub
 // review-request fact, several of these actions are model-inferred for an
-// authored PR; the CI flag and the conflict/block/feedback actions are hard
-// GitHub facts. CIFailing is submitter-scoped, so it is meaningful here (it is
-// always false on the reviewer PRs ballWithUs sees).
+// authored PR; the CI flag, PendingReviewers, and the conflict/feedback
+// actions are hard GitHub facts. CIFailing is submitter-scoped, so it is
+// meaningful here (it is always false on the reviewer PRs ballWithUs sees).
 func ballWithSubmitter(p model.PR) bool {
 	if p.CIFailing {
 		return true
 	}
 	switch p.Action {
+	case model.ActionMergeBlocked:
+		return !p.PendingReviewers
 	case model.ActionChangesRequested, model.ActionAuthorActive, model.ActionConflicted,
-		model.ActionMergeBlocked, model.ActionReviewFeedback, model.ActionMergeReady,
-		model.ActionUnassigned:
+		model.ActionReviewFeedback, model.ActionMergeReady, model.ActionUnassigned:
 		return true
 	default: // awaiting_review, blocked_external
 		return false
@@ -414,8 +423,15 @@ func actionNeededCell(p model.PR) string {
 	marker := markPending
 	switch p.Action {
 	case model.ActionAuthorActive, model.ActionChangesRequested, model.ActionMergeReady,
-		model.ActionConflicted, model.ActionMergeBlocked, model.ActionReviewFeedback:
+		model.ActionConflicted, model.ActionReviewFeedback:
 		marker = markBackForth
+	case model.ActionMergeBlocked:
+		// Active back-and-forth only while the block is actually the author's
+		// to clear (ballWithSubmitter); with reviewers still pending it is
+		// "not on us" like a plain awaiting_review row.
+		if !p.PendingReviewers {
+			marker = markBackForth
+		}
 	}
 	note := p.Companion
 	if note == "" {

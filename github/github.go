@@ -393,6 +393,13 @@ func (c *Client) attachEventTrail(ctx context.Context, p *model.PR) error {
 		// requirement, distinct from "dirty" (conflicts, mirrors Mergeable),
 		// and drives the deterministic merge-blocked action (classify).
 		p.MergeableState = pull.GetMergeableState()
+		// PendingReviewers is read off the same Get call (no extra cost):
+		// RequestedReviewers/RequestedTeams list who GitHub currently has a
+		// pending request on. A non-empty list disambiguates a submitter PR's
+		// merge-blocked state (classify/render ballWithSubmitter) — the block
+		// is not the author's to clear while a requested reviewer has not yet
+		// acted.
+		p.PendingReviewers = len(pull.RequestedReviewers) > 0 || len(pull.RequestedTeams) > 0
 	}
 
 	var events []model.Event

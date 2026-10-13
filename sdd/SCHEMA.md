@@ -56,6 +56,18 @@ the row states the fact without guessing a cause. `dirty` (conflict) and
 `merge_blocked` are never both true from the same data — but if a future GitHub
 change ever made that possible, `conflicted` wins, being the harder blocker.
 Neither override applies to the `stale` bucket or the merged/closed floors.
+
+The `action` value alone does not say *whose* move clears the block — a
+required review GitHub is still waiting on from a reviewer it already asked is
+one of the causes `blocked` conflates, and that is not the author's to clear.
+The submitter render split (render.go `ballWithSubmitter`) therefore also
+consults the run-local `PendingReviewers` fact — true when GitHub's own
+`requested_reviewers`/`requested_teams` on the same single-PR call list anyone
+who has not yet reviewed — before placing a merge-blocked PR in "Awaiting Our
+Action"; with a pending reviewer it renders under "Open — Awaiting Review"
+instead, same as a plain `awaiting_review` row (TDD 4.7a). `PendingReviewers`
+is a `!pr` struct field but, like `Mergeable`/`MergeableState`, it is
+recomputed every run and never persisted to the store.
 See TDD 4.7 (conflicted), TDD 4.7a (merge blocked), and TDD 4.9 (review feedback).
 
 A **failing build is deliberately not in this enum.** It is an equally hard

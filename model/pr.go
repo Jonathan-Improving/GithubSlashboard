@@ -88,6 +88,18 @@ type PR struct {
 	// persisted.
 	UnresolvedThreads int `yaml:"-" json:"-"`
 
+	// PendingReviewers is true when GitHub reports one or more reviewers (or
+	// teams) currently requested on this PR who have not yet submitted a
+	// review. It comes from the same single-PR Get call that already supplies
+	// Mergeable/MergeableState, at no extra request cost. It exists to
+	// disambiguate `mergeable_state: blocked` for a submitter PR (TDD 4.7a):
+	// that state alone conflates several causes GitHub does not detail
+	// (ISSUES § C), and when a request is still outstanding on a reviewer, the
+	// author has nothing further to do, so the merge-blocked override must not
+	// be read as "ball is with us" in that case. Recomputed each run; not
+	// persisted.
+	PendingReviewers bool `yaml:"-" json:"-"`
+
 	Bucket      Bucket      `yaml:"bucket" json:"bucket"`
 	Action      Action      `yaml:"action,omitempty" json:"action,omitempty"`
 	CloseReason CloseReason `yaml:"close_reason,omitempty" json:"close_reason,omitempty"`

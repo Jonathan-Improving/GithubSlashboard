@@ -138,6 +138,48 @@ func TestSubmitterOpenBallHoldingSplit(t *testing.T) {
 	}
 }
 
+// TestMergeBlockedWithPendingReviewerGoesToAwaitingReview covers the TDD 4.7a
+// render split: a merge-blocked submitter PR with a reviewer GitHub is still
+// waiting to hear from is not the author's move, so it must land in "Open —
+// Awaiting Review" rather than "Awaiting Our Action", unlike a merge-blocked
+// PR with no reviewer pending (the ballHoldingSplit test above).
+func TestMergeBlockedWithPendingReviewerGoesToAwaitingReview(t *testing.T) {
+	created := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	prs := []model.PR{
+		{Repo: "r/z", Number: 1, Title: "blocked-pending-reviewer", URL: "u", Role: model.RoleSubmitter,
+			Created: created, Bucket: model.BucketOpen, Action: model.ActionMergeBlocked,
+			PendingReviewers: true, Priority: model.PriorityNeutral, Companion: "blocked-pending-reviewer"},
+		{Repo: "r/z", Number: 2, Title: "blocked-no-reviewer", URL: "u", Role: model.RoleSubmitter,
+			Created: created, Bucket: model.BucketOpen, Action: model.ActionMergeBlocked,
+			PendingReviewers: false, Priority: model.PriorityNeutral, Companion: "blocked-no-reviewer"},
+	}
+	md := Render(prs, nil, nil, "x", refNow)
+
+	usStart := strings.Index(md, "## Awaiting Our Action")
+	reviewStart := strings.Index(md, "## 💡 Open — Awaiting Review")
+	staleStart := strings.Index(md, "## ☠ Stale")
+	ourAction := md[usStart:reviewStart]
+	awaitingReview := md[reviewStart:staleStart]
+
+	if !strings.Contains(ourAction, "blocked-no-reviewer") {
+		t.Errorf("merge-blocked with no pending reviewer should be in Awaiting Our Action\n%s", ourAction)
+	}
+	if strings.Contains(awaitingReview, "blocked-no-reviewer") {
+		t.Errorf("merge-blocked with no pending reviewer should not be in Open — Awaiting Review\n%s", awaitingReview)
+	}
+	if !strings.Contains(awaitingReview, "blocked-pending-reviewer") {
+		t.Errorf("merge-blocked with a pending reviewer should be in Open — Awaiting Review\n%s", awaitingReview)
+	}
+	if strings.Contains(ourAction, "blocked-pending-reviewer") {
+		t.Errorf("merge-blocked with a pending reviewer should not be in Awaiting Our Action\n%s", ourAction)
+	}
+	// Both rows still carry the "blocked from merging" fact regardless of
+	// which table they land in — only the table placement differs.
+	if strings.Count(md, "blocked from merging —") != 2 {
+		t.Errorf("expected both merge-blocked rows to carry the blocked-from-merging note\n%s", md)
+	}
+}
+
 func TestActionNeededMarkers(t *testing.T) {
 	// Structural markers are only rendered when the model inferred no emoji
 	// (the inferred glyph otherwise leads on its own), so assert the
@@ -161,6 +203,32 @@ func TestActionNeededMarkers(t *testing.T) {
 			md := Render(prs, nil, nil, "x", refNow)
 			if !strings.Contains(md, tc.want+" note") {
 				t.Errorf("action %s: expected marker %q\n%s", tc.action, tc.want, md)
+			}
+		})
+	}
+}
+
+// TestMergeBlockedMarkerFollowsPendingReviewers covers the marker half of
+// TDD 4.7a's render split: merge-blocked is back-and-forth only when there is
+// no reviewer still pending; with one pending it reads as "not on us", same as
+// a plain awaiting_review row.
+func TestMergeBlockedMarkerFollowsPendingReviewers(t *testing.T) {
+	created := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name             string
+		pendingReviewers bool
+		want             string
+	}{
+		{"no pending reviewer is back-and-forth", false, markBackForth},
+		{"pending reviewer is pending", true, markPending},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prs := []model.PR{{Repo: "a/x", Number: 1, Title: "Alpha", URL: "u1", Role: model.RoleSubmitter,
+				Created: created, Bucket: model.BucketOpen, Action: model.ActionMergeBlocked,
+				PendingReviewers: tc.pendingReviewers, Priority: model.PriorityNeutral, Companion: "note"}}
+			md := Render(prs, nil, nil, "x", refNow)
+			if !strings.Contains(md, tc.want+" blocked from merging — note") {
+				t.Errorf("pendingReviewers=%v: expected marker %q\n%s", tc.pendingReviewers, tc.want, md)
 			}
 		})
 	}

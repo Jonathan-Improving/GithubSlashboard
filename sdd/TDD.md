@@ -360,6 +360,18 @@ reference them by name.
 - **And** it never overrides the Stale bucket nor the immutable merged/closed
   floors, and a merge-blocked PR the operator only reviews is not flagged (the
   block is not theirs to clear)
+- **And** the Action value alone does not say whose move it is: `blocked`
+  conflates several causes GitHub does not detail (ISSUES § C), and one of
+  those causes — a required review GitHub is still waiting on from a reviewer
+  it already asked — is not the author's to clear. So the submitter render
+  split (TDD 3.1/4.12) sends a merge-blocked PR to "Awaiting Our Action" only
+  when GitHub reports no reviewer still pending (`PendingReviewers` false,
+  read off the same single-PR call as `MergeableState`, at no extra cost); with
+  a reviewer still pending it renders under "Open — Awaiting Review" instead,
+  same as a plain awaiting_review PR, and its structural marker follows suit
+  (⏳ pending-not-us rather than 🔄 back-and-forth) — the "blocked from
+  merging" note text itself is unchanged either way, since it remains a true
+  fact regardless of whose move it is
 - **Note** because the block is a hard fact rather than a judgment, it surfaces
   even on a row that fell to `unverified`; a model-inferred `merge_ready` sitting
   on a row GitHub itself reports as blocked was the concrete defect motivating
