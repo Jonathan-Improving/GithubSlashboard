@@ -42,6 +42,9 @@ nothing there for a model to read.
 - **Pluggable model provider**: uses a cheap local model via CLI (Kiro CLI for the
   MVP); Grok-, Claude-, and Ollama-style providers drop in without code changes.
 - **Priority flagging**: highlights items where the history signals urgency.
+- **Honest about failure**: if a run aborts before it can refresh the dashboard,
+  the document is topped with a staleness banner saying so — a failed run can
+  never leave stale data masquerading as current.
 
 ## Requirements
 

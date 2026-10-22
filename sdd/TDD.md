@@ -10,7 +10,7 @@ change in front of you.
 |---|-----------------|---------|
 | 1 | GitHub data acquisition | 1.1 – 1.6 |
 | 2 | YAML store (source of truth) | 2.1 – 2.5 |
-| 3 | Markdown rendering (pure sink) | 3.1 – 3.5 |
+| 3 | Markdown rendering (pure sink) | 3.1 – 3.7 |
 | 4 | Status classification | 4.1 – 4.14, 4.7a |
 | 5 | Stale determination | 5.1 – 5.4 |
 | 6 | Provider / LLM hand-off | 6.1 – 6.18 |
@@ -48,8 +48,10 @@ reference them by name.
 ### 1.2 Acquisition failure is non-destructive
 - **Given** the GitHub API is unreachable or returns an error
 - **When** the tool attempts to fetch
-- **Then** it aborts without modifying the YAML store or the Markdown output, and
-  reports the error
+- **Then** it aborts without modifying the YAML store, and reports the error
+- **And** the Markdown output is not refreshed, but is annotated with a
+  staleness banner per 3.7 — the one exception to leaving the output untouched,
+  so an aborted run cannot leave a stale dashboard looking current
 
 ### 1.2a A search that times out server-side is treated as a failure, not a partial success
 - **Given** a GitHub search (any of the `author:`, `review-requested:`,
@@ -135,6 +137,8 @@ reference them by name.
 - **When** the tool reads it
 - **Then** the tool refuses to proceed rather than silently repairing or
   overwriting it
+- **And** the aborted run annotates the Markdown output with a staleness banner
+  per 3.7; the store itself is still never written
 
 ### 2.5 Scope expansion without restructuring
 - **Given** the store, holding `!pr` and `!issue` documents
@@ -267,6 +271,26 @@ reference them by name.
   `Awaiting Our Action` — a row already needing the operator's attention by
   construction (3.1's ball-holding split) is still worth surfacing by recency
   within that set, the same as everywhere else
+
+### 3.7 An aborted run leaves a staleness banner at the top
+- **Given** a run that aborts before it can refresh the document — any failure
+  in the pipeline (acquisition failure 1.2, a malformed store 2.4, a provider or
+  output-write failure), as distinct from an overlapping run that cleanly skips
+  its cycle
+- **When** the run exits with a failure
+- **Then** the Markdown output carries a prominent error banner at the very top
+  stating that generation aborted prematurely, when it aborted, and why, warning
+  that the dashboard below reflects a previous run and may be stale
+- **And** when a prior document exists its content is preserved below the banner
+  (the operator still sees the last good dashboard); when none exists a readable
+  placeholder stands in its place
+- **And** a second consecutive abort replaces the banner rather than stacking a
+  new one on top, so repeated failures never grow a pile of banners
+- **And** the next successful run overwrites the document wholesale, so the
+  banner is gone once generation recovers — a successful render never carries one
+- **Note** this is the one deliberate exception to 1.2 and 2.4's "does not touch
+  the output" guarantee: the store is still never written on an abort, but the
+  output is annotated so a stale dashboard cannot masquerade as current
 
 ---
 

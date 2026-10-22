@@ -6,6 +6,7 @@
 | C | The CI-failing flag counts any failing check, not just required ones | Low |
 | D | An inferred note can outlive the fact it asserts | Medium |
 | E | The unchanged-input fingerprint cannot see a same-count thread swap | Low |
+| F | A newly pinned PR produces no notification on its first appearance | Low |
 
 ## B. Acquisition is broad and bounded by GitHub's search rate limit
 

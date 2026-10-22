@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -122,9 +123,59 @@ func run() int {
 
 	if err := pipeline(ctx, cfg, log); err != nil {
 		log.Error("run failed", "err", err)
+		// The run aborted before it could refresh the dashboard, so the output
+		// file (if one exists) now holds stale data with nothing to say so. Mark
+		// it: prepend an abort banner so a reader opening the dashboard sees it
+		// is out of date and why, rather than trusting rows that predate the
+		// failure (new requirement; TDD 1.2, 2.4). Best-effort — a failure to
+		// write the banner is logged but never changes the exit status, and the
+		// original error is what already governs it.
+		writeAbortBanner(cfg, err, log)
 		return 1
 	}
 	return 0
+}
+
+// abortBannerTimeFormat formats the aborted-run timestamp shown in the banner.
+const abortBannerTimeFormat = lastUpdatedLayout
+
+// writeAbortBanner prepends an abort banner to the existing output document (or
+// writes a banner-only placeholder when none exists), so an aborted run leaves
+// a visible staleness warning at the top of the dashboard rather than a stale
+// file that looks current (TDD 1.2, 2.4). It is strictly best-effort: every
+// failure is logged and swallowed, because this runs on a path that has already
+// failed and must not fail louder or mask the original error. The banner's
+// reason is the first line of the run error, kept short and free of any
+// multi-line remediation text so the banner stays a terse at-a-glance warning.
+func writeAbortBanner(cfg config.Config, runErr error, log *slog.Logger) {
+	if cfg.OutputPath == "" {
+		return
+	}
+	existing, err := os.ReadFile(cfg.OutputPath)
+	if err != nil && !os.IsNotExist(err) {
+		// Could not read the prior document; proceed with an empty base so the
+		// operator still gets a banner-only placeholder rather than nothing.
+		log.Warn("abort banner: could not read existing output", "err", err)
+		existing = nil
+	}
+	reason := firstLine(runErr.Error())
+	when := time.Now().Format(abortBannerTimeFormat)
+	banner := render.AbortBanner(reason, when)
+	doc := render.PrependAbortBanner(string(existing), banner)
+	if werr := writeOutput(cfg.OutputPath, doc, filepath.Dir(cfg.StorePath)); werr != nil {
+		log.Warn("abort banner: could not write output", "err", werr)
+		return
+	}
+	log.Info("abort banner written to stale output", "path", cfg.OutputPath)
+}
+
+// firstLine returns the first line of s, trimmed, so a multi-line error (e.g.
+// the TCC remediation block) contributes only its headline to the banner.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // pipeline runs acquire → classify → persist → render in order. Any acquisition
