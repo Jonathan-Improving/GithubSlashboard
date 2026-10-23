@@ -100,6 +100,54 @@ func TestAgeThresholdStale(t *testing.T) {
 	}
 }
 
+// TestAgeThresholdStaleWhenUnverified covers the deterministic age-threshold
+// stale fact on the UNVERIFIED path (TDD 5.2): age is a hard fact independent
+// of whether the provider produced a usable verdict, so a PR past the threshold
+// is Stale even when classification fell back to unverified. Regression for the
+// empty-Stale-bucket defect — the unverified branch returned before applying
+// stale-by-age, so a down provider emptied the Stale bucket entirely
+// (ANTI-PATTERNS #6: a deterministic fact whose correctness depends on the
+// rule combination a fixture did not reproduce).
+func TestAgeThresholdStaleWhenUnverified(t *testing.T) {
+	now := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+	// Invalid JSON forces the unverified fallback on every attempt.
+	c := testClassifier("not a verdict", now)
+	old := now.Add(-200 * 24 * time.Hour)
+	pr := model.PR{Repo: "o/n", Number: 41, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: old, LastActivity: old,
+		Events: []model.Event{{Timestamp: old, Kind: model.EventComment, Text: "hi"}}}
+	got := c.classifyOne(context.Background(), pr)
+	if !got.Unverified {
+		t.Fatalf("expected the provider to fall through to unverified; got verified")
+	}
+	if got.Bucket != model.BucketStale {
+		t.Errorf("age-stale not applied on the unverified path: got %q (TDD 5.2)", got.Bucket)
+	}
+	if got.Action != "" {
+		t.Errorf("a stale PR carries no action, got %q", got.Action)
+	}
+}
+
+// TestUnverifiedLiveRequestNotStaled guards the precedence: a reviewer PR with a
+// live pending review request is GitHub actively asking us to act, so it is not
+// staled by age even on the unverified path (mirrors the verified path's
+// !reviewerAwaiting guard on the age override).
+func TestUnverifiedLiveRequestNotStaled(t *testing.T) {
+	now := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+	c := testClassifier("not a verdict", now)
+	old := now.Add(-200 * 24 * time.Hour)
+	pr := model.PR{Repo: "o/n", Number: 42, GitHubState: model.GitHubStateOpen, Role: model.RoleReviewer,
+		Created: old, LastActivity: old, ReviewRequested: true,
+		Events: []model.Event{{Timestamp: old, Kind: model.EventComment, Text: "hi"}}}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Bucket == model.BucketStale {
+		t.Errorf("a live review request must not be staled by age, even unverified (TDD 5.2 vs reviewerAwaiting)")
+	}
+	if got.Action != model.ActionAwaitingReview {
+		t.Errorf("live request should keep action awaiting_review, got %q", got.Action)
+	}
+}
+
 func TestInferredStale(t *testing.T) {
 	now := time.Now()
 	c := testClassifier(`{"bucket":"stale","priority":"neutral","companion":"tombstone left open intentionally","emoji":"✅"}`, now)

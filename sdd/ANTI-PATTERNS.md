@@ -205,9 +205,22 @@ generalizes: any newly *reachable* state, not only a new deterministic fact,
 wants one real exercise before it is believed. Fixed with an empty-file write
 guard and a regression test.
 
-**Cost**: Two separate defects, each costing a ~5-minute live run to detect plus a
-diagnostic pass, both after a fully green suite. Each would have shipped
-undetected — Severity: Medium.
+**Recurrence (unverified stale path)**: The same shape bit a *third* time, and
+this one shipped and ran. The deterministic age-threshold stale fact (TDD 5.2)
+was applied only on the verified classification path; the unverified fallback
+branch returned before reaching it. Each rule was individually correct and the
+suite was green, but the defect lived in the combination "aged PR + provider
+produced no usable verdict" — which no fixture reproduced, because the existing
+stale test used a *valid* fake response and so only ever exercised the verified
+path. The visible effect: whenever the provider was degraded enough that open
+PRs fell to unverified, the Stale bucket emptied entirely, since no open PR could
+age out. It was found by reading a live dashboard against the store, not by the
+suite. Fixed by applying the same age override (with the same live-request
+precedence guard) on the unverified path, and backed by a regression test that
+drives the unverified path specifically — the fixture the live defect revealed.
+
+**Cost**: Three separate defects now, each after a fully green suite, each found
+only by live inspection — Severity: Medium.
 
 ## 7. Sharing one timeout bound across two structurally different providers
 

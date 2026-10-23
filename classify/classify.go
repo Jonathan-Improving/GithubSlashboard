@@ -297,6 +297,25 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// meaningful only for a submitter PR. Runs after the reviewerAwaiting
 		// promotion so a genuine live request is preserved.
 		demoteReviewerAwaitingReview(&pr)
+		// Age-threshold stale is a deterministic fact (TDD 5.2), not a model
+		// judgment — it depends only on how long the PR has sat without
+		// activity, which is known regardless of whether the provider produced a
+		// usable verdict. So it must fire on the unverified path exactly as it
+		// does on the verified one below; omitting it let a down provider empty
+		// the Stale bucket entirely, since every open PR fell here and none
+		// could age out (ANTI-PATTERNS #6). The !reviewerAwaiting guard mirrors
+		// the verified path: a live pending request means GitHub is actively
+		// asking us to act, so such a PR is not stale regardless of age. When it
+		// goes stale the action is cleared (nothing is awaited) — matching the
+		// verified tombstone and operator-override paths.
+		if pr.Bucket == model.BucketOpen && !reviewerAwaiting(pr) && c.staleByAge(pr) {
+			pr.Bucket = model.BucketStale
+			pr.Action = ""
+			// A stale PR's check state is moot: nothing further is expected, so
+			// a red build is not work owed (TDD 4.10). Mirror the verified
+			// path, which clears CIFailing on every route into the stale bucket.
+			pr.CIFailing = false
+		}
 		pr.Priority = model.PriorityNeutral
 		pr.Companion = ""
 		// Neither provider produced a usable verdict, so there is no real

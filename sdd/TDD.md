@@ -553,6 +553,12 @@ reference them by name.
 - **Given** a PR with no activity since `stale_age_threshold`
 - **When** classified
 - **Then** the PR is Stale
+- **Note** this is a deterministic fact of elapsed time, independent of the
+  provider — so it holds even when classification fell back to unverified
+  (6.4), exactly as the other hard GitHub facts (conflict, merge-blocked,
+  review-feedback, a live review request) survive that fallback. The one
+  exception is a reviewer PR with a live pending request: GitHub is actively
+  asking us to act, so it is not staled by age regardless of elapsed time
 
 ### 5.3 Inferred tombstone
 - **Given** the event trail carries clear evidence that no further action will be
