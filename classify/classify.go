@@ -237,14 +237,14 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// trusted as a cache: its bucket/action/companion may already be the
 	// degraded fallback, not a real judgment worth repeating forever.
 	fp := fingerprint(pr)
-	if old, ok := c.prior[pr.Key()]; ok && !old.Unverified && old.InputFingerprint != "" && old.InputFingerprint == fp {
+	if old, ok := c.prior[pr.Key()]; ok && !old.Unverified && fingerprintUnchanged(pr, old.InputFingerprint) {
 		pr.Bucket = old.Bucket
 		pr.Action = old.Action
 		pr.Priority = old.Priority
 		pr.Companion = old.Companion
 		pr.Emoji = old.Emoji
 		pr.Unverified = false
-		pr.InputFingerprint = fp
+		pr.InputFingerprint = old.InputFingerprint
 		// Carried forward unchanged: nothing was re-judged this run, so the
 		// provenance of the carried verdict is also carried forward rather than
 		// re-stamped (TDD 6.16) — obvious once stated: this row's Provider
@@ -521,13 +521,19 @@ func submitterMergeBlocked(pr model.PR) bool {
 // PR's own last-modified signal (TDD 4.13). The result is opaque; it has no
 // meaning beyond equality comparison.
 func fingerprint(pr model.PR) string {
+	return fingerprintWith(pr, pr.Mergeable, pr.MergeableState)
+}
+
+// fingerprintWith computes fingerprint's hash with the mergeability reading
+// replaced by the given one, leaving every other input as pr carries it.
+func fingerprintWith(pr model.PR, mergeableFlag *bool, state string) string {
 	var last model.Event
 	if n := len(pr.Events); n > 0 {
 		last = pr.Events[n-1]
 	}
 	mergeable := "unknown"
-	if pr.Mergeable != nil {
-		if *pr.Mergeable {
+	if mergeableFlag != nil {
+		if *mergeableFlag {
 			mergeable = "true"
 		} else {
 			mergeable = "false"
@@ -536,8 +542,49 @@ func fingerprint(pr model.PR) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%s|%s|%t|%d|%s|%s|%t",
 		last.Timestamp.UTC().Format(time.RFC3339Nano), last.Kind, last.Text,
-		pr.CIFailing, pr.UnresolvedThreads, mergeable, pr.MergeableState, pr.ReviewRequested)
+		pr.CIFailing, pr.UnresolvedThreads, mergeable, state, pr.ReviewRequested)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// mergeableStateUnknown is the mergeable_state GitHub reports while it is still
+// computing mergeability, which it does lazily and not on every fetch.
+const mergeableStateUnknown = "unknown"
+
+// knownMergeableStates are the mergeable_state values GitHub reports once it has
+// finished computing mergeability.
+var knownMergeableStates = []string{"clean", "unstable", "blocked", "behind", "dirty", "draft", "has_hooks"}
+
+// mergeabilityKnown reports whether pr carries a finished mergeability reading.
+func mergeabilityKnown(pr model.PR) bool {
+	return pr.Mergeable != nil && pr.MergeableState != mergeableStateUnknown
+}
+
+// fingerprintUnchanged reports whether pr's deterministic inputs match the ones
+// stored fingerprint stored was computed from (TDD 4.13). A fetch that returned
+// no finished mergeability reading says nothing about mergeability, so it must
+// not count as a change (TDD 4.13a): such a PR matches when stored was computed
+// from the same other inputs under any finished reading, or under the same
+// unfinished one. A finished reading is compared strictly, so a stored value
+// taken while GitHub was still computing never masks a real reading.
+func fingerprintUnchanged(pr model.PR, stored string) bool {
+	if stored == "" {
+		return false
+	}
+	if stored == fingerprint(pr) {
+		return true
+	}
+	if mergeabilityKnown(pr) {
+		return false
+	}
+	for _, flag := range []bool{true, false} {
+		for _, state := range knownMergeableStates {
+			f := flag
+			if stored == fingerprintWith(pr, &f, state) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // staleByAge reports whether the PR has had no activity within the configured

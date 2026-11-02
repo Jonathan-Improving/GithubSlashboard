@@ -11,7 +11,7 @@ change in front of you.
 | 1 | GitHub data acquisition | 1.1 – 1.6 |
 | 2 | YAML store (source of truth) | 2.1 – 2.5 |
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.7 |
-| 4 | Status classification | 4.1 – 4.14, 4.7a |
+| 4 | Status classification | 4.1 – 4.14, 4.7a, 4.13a |
 | 5 | Stale determination | 5.1 – 5.4 |
 | 6 | Provider / LLM hand-off | 6.1 – 6.18 |
 | 7 | Execution & portability | 7.1 – 7.2 |
@@ -530,6 +530,22 @@ reference them by name.
   timing evidence behind 4.10 — a check-run cycle can complete without moving a
   PR's own last-modified signal, so the comparison must be built from freshly
   fetched deterministic facts, not a lighter proxy for them)
+
+### 4.13a An unfinished mergeability reading is not a change
+- **Given** an open PR whose stored record was last classified from a finished
+  mergeability reading, and a later fetch where GitHub had not finished
+  computing mergeability (it reports it lazily, so the same PR can alternate
+  between a finished and an unfinished reading with no real change)
+- **When** every other deterministic input (4.13) is identical
+- **Then** the provider is not called, the stored verdict is carried forward
+  verbatim, the stored fingerprint is kept as it was, and the PR is not reported
+  as changed for the notification hook (9.1)
+- **And** a finished reading that differs from the stored finished reading, a
+  finished reading arriving after a record judged while unfinished, and any other
+  changed input during an unfinished reading all still reach the provider (4.14)
+- **Note** an unfinished reading carries no information about mergeability, so
+  treating it as a value that changed re-judged the PR on every flap, and the
+  model's reworded note then fired a notification for a PR that had not moved
 
 ### 4.14 A first-seen, changed, or previously-unverified PR always reaches the provider
 - **Given** an open PR that either has no prior stored record, or has a prior
