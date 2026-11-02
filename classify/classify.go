@@ -108,6 +108,9 @@ func (c *Classifier) classifyOne(ctx context.Context, pr model.PR) model.PR {
 	// is exactly the change the operator wants and a bucket-only predicate
 	// silently dropped (TDD 9.2; ANTI-PATTERNS #13).
 	out.StatusChanged = hadPrior && statusSignature(out) != statusSignature(prior)
+	if hadPrior && !out.StatusChanged {
+		out.ProseHeldBack = proseChange(out.Companion, out.Emoji, prior.Companion, prior.Emoji)
+	}
 	return out
 }
 

@@ -164,14 +164,21 @@ type PR struct {
 	Events []Event `yaml:"-" json:"-"`
 
 	// StatusChanged is true when this run's status signature for the PR differs
-	// from that of its prior stored record — any change to its disposition
-	// (bucket, action, CI flag, priority, emoji, companion, close-reason, or
-	// the raw LastActivity timestamp), not merely a bucket transition (TDD 9.1,
-	// 9.2). It is false for a first-seen PR (nothing to diff against) and for a
+	// from that of its prior stored record in a hard field — bucket, action, CI
+	// flag, priority, close-reason, or the raw LastActivity timestamp (TDD 9.1,
+	// 9.2). A difference in only the companion note or emoji is not counted here:
+	// it is recorded in ProseHeldBack for the Prose Diff Checker to judge (TDD
+	// 9.9). It is false for a first-seen PR (nothing to diff against) and for a
 	// run that carried the prior verdict forward unchanged. It exists solely to
 	// drive the notification hook's change collection; it is a run-local signal,
 	// not a fact about the PR, so it is never persisted.
 	StatusChanged bool `yaml:"-" json:"-"`
+
+	// ProseHeldBack is non-nil when the PR's hard fields match its prior stored
+	// record's but its companion note or emoji differs, carrying the prior
+	// values for the Prose Diff Checker (TDD 9.9, 9.10). Run-local; never
+	// persisted.
+	ProseHeldBack *ProseChange `yaml:"-" json:"-"`
 }
 
 // Key uniquely identifies a PR across the tracked set and the store.
@@ -200,4 +207,11 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// ProseChange carries the prior companion note and emoji of an item whose only
+// difference from its prior stored record this run is in that prose (TDD 9.9).
+type ProseChange struct {
+	OldCompanion string
+	OldEmoji     string
 }

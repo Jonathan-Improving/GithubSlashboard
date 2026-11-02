@@ -24,8 +24,6 @@ func TestStatusSignatureCoversDispositionFields(t *testing.T) {
 		"action":       func(p *model.PR) { p.Action = model.ActionMergeReady },
 		"ci_failing":   func(p *model.PR) { p.CIFailing = true },
 		"priority":     func(p *model.PR) { p.Priority = model.PriorityElevated },
-		"emoji":        func(p *model.PR) { p.Emoji = "✅" },
-		"companion":    func(p *model.PR) { p.Companion = "a different note now" },
 		"lastActivity": func(p *model.PR) { p.LastActivity = time.Unix(2000, 0) },
 	}
 	for name, mut := range mutations {
@@ -77,8 +75,6 @@ func TestIssueStatusSignatureCoversDispositionFields(t *testing.T) {
 		"bucket":       func(i *model.Issue) { i.Bucket = model.IssueBucketStale },
 		"action":       func(i *model.Issue) { i.Action = model.IssueActionAwaitingResponse },
 		"priority":     func(i *model.Issue) { i.Priority = model.PriorityElevated },
-		"emoji":        func(i *model.Issue) { i.Emoji = "✅" },
-		"companion":    func(i *model.Issue) { i.Companion = "a different note now" },
 		"closeReason":  func(i *model.Issue) { i.CloseReason = model.IssueCloseReasonCompleted },
 		"lastActivity": func(i *model.Issue) { i.LastActivity = time.Unix(2000, 0) },
 	}
@@ -88,5 +84,23 @@ func TestIssueStatusSignatureCoversDispositionFields(t *testing.T) {
 		if issueStatusSignature(i) == sig {
 			t.Errorf("changing %s must change the issue signature but did not", name)
 		}
+	}
+}
+
+// TestStatusSignatureExcludesProse proves the model-written note and emoji are
+// not part of either signature: a reworded note is judged by the Prose Diff
+// Checker, not counted as a change outright (TDD 9.9).
+func TestStatusSignatureExcludesProse(t *testing.T) {
+	pr := model.PR{Repo: "o/n", Number: 1, Bucket: model.BucketOpen, Companion: "a short note here", Emoji: "⏳"}
+	pr2 := pr
+	pr2.Companion, pr2.Emoji = "a different note now", "✅"
+	if statusSignature(pr) != statusSignature(pr2) {
+		t.Error("PR prose must not enter the signature (TDD 9.9)")
+	}
+	i := model.Issue{Repo: "a/x", Number: 1, Bucket: model.IssueBucketOpen, Companion: "a short note here", Emoji: "⏳"}
+	i2 := i
+	i2.Companion, i2.Emoji = "a different note now", "✅"
+	if issueStatusSignature(i) != issueStatusSignature(i2) {
+		t.Error("issue prose must not enter the signature (TDD 9.9)")
 	}
 }

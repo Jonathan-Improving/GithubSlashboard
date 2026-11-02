@@ -540,11 +540,9 @@ call.
 
 ## Notification hook
 
-After classification, the tool identifies which open PRs and issues actually
-required a provider judgment this run (TDD 4.13/8.8 — a fresh judgment happens
-for a first-seen item, one whose deterministic inputs changed, or one whose
-prior record was unverified; an item carried forward unchanged is deliberately
-excluded). When that set is non-empty, the tool asks the provider for one short
+After classification, the tool identifies which PRs and issues changed status
+this run (see Scope below), after the Prose Diff Checker has judged any
+note-only differences. When that set is non-empty, the tool asks the provider for one short
 summary sentence via a distinct, simpler contract (`Summarize`, TDD 6.9 — not
 the classification `Request`/`Response` shape above), then writes a single JSON
 object to the stdin of the configured hook command (`GSB_NOTIFY_HOOK`) and waits
@@ -556,9 +554,9 @@ not a full diff or the item's history.
 
 **Scope**: any PR or issue whose status signature this run differs from its
 prior stored record's can appear in `changed`. The signature is built from the
-fields that constitute the item's disposition — bucket, action, the CI flag,
-priority, emoji, companion, close-reason, and the raw `LastActivity` timestamp
-— excluding every `now`-relative value (Age, the rendered Updated column). This
+hard fields that constitute the item's disposition — bucket, action, the CI
+flag, priority, close-reason, and the raw `LastActivity` timestamp — excluding
+every `now`-relative value (Age, the rendered Updated column). This
 covers both a bucket transition (Open→Merged, Open→Closed, Open→Stale, and
 Stale→Open are all notification-worthy) and a within-bucket disposition change
 (a review request landing on an open reviewer PR, a build going red, a priority
@@ -567,6 +565,22 @@ whose signature did not change never appears, even when its note call touched
 the provider this run — re-confirming an unchanged disposition is not news. A
 first-seen item (no prior stored record) never appears either, since there is
 nothing to diff against.
+
+**Prose-only differences**: the model-written companion note and emoji are not
+part of the signature. An item whose hard fields match its prior record but whose
+note or emoji differs is held back, and the run's held-back items are sent
+together, with their old and new notes, to the Prose Diff Checker (TDD 9.9,
+9.10): a small model, in its own provider slot (`GSB_PROSE_DIFF_PROVIDER`,
+default the primary's provider; `GSB_PROSE_DIFF_MODEL`, default
+`claude-haiku-4.5` for `kiro`, otherwise the provider's own default;
+`GSB_PROSE_DIFF_TIMEOUT`, default `60s`). It uses the same plain
+prompt-in, string-out contract as `Summarize` and answers one line of
+`ID=YES` / `ID=NO` pairs, `YES` meaning the new note differs in meaning. Only
+`YES` items join `changed` (TDD 9.11). If its attempt fails, the configured
+fallback provider gets one attempt at the same batch, bounded by three times
+`GSB_PROSE_DIFF_TIMEOUT` (TDD 9.14); an item still without a verdict is counted
+as changed (TDD 9.15). The stored record takes the new note whatever the verdict
+(TDD 9.12). With no hook configured the checker is never built or called.
 
 **Firing condition**: the hook is invoked only when `changed` is non-empty. A
 run where no item's status signature changed produces no notification —

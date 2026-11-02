@@ -107,9 +107,14 @@ Operator-set fields survive re-runs (TDD 2.2). For the document field reference,
 see SCHEMA.md.
 
 **Notification hook (optional, outbound).** After classification, `notify`
-collects every PR/issue whose bucket this run differs from its prior stored
-bucket — any transition, including into or out of merged/closed/stale — and,
-when that set is non-empty, asks the same provider for a short summary
+collects every PR/issue whose status this run differs from its prior stored
+record in a hard field (bucket, action, CI flag, priority, close reason, last
+activity). An item whose only difference is its model-written note or emoji is
+held back; with a hook configured, the **Prose Diff Checker** (a small model in
+its own provider slot, falling back to the configured fallback provider) judges
+all held-back items in one batch call and only those it finds meaningfully
+different, or could not judge, join the set (TDD 9.9 to 9.16). When the set is
+non-empty, `notify` asks the same provider for a short summary
 sentence (`Summarize` — a distinct, simpler contract than per-item judgment,
 TDD 6.9) and writes a JSON payload to the stdin of a configured external
 command (`GSB_NOTIFY_HOOK`), bounded by a timeout. This is the one
@@ -135,7 +140,7 @@ cannot be tricked into command injection by adversarial GitHub content
 | `provider` | Owns the provider interface, response parsing, and the self-correcting retry loop. The request/response contract is generic over entity, with the valid vocabulary supplied per request. Two invocation strategies live behind the interface: a one-shot subprocess provider (prompt on stdin) and a session provider that reuses one long-lived harness under tmux and receives the structured verdict through a local MCP sink; which strategy a given provider name uses is a closed, code-owned mapping, not a separately configured value. An optional fallback provider — built through the same construction path as the primary — is invoked only once the primary's own retry budget is exhausted, bounded by its own independent timeout. A second, simpler contract (`Summarize`) produces the notification hook's summary sentence — a plain prompt in, a plain string out, no vocabulary to validate, no retry loop (TDD 6.9); the session provider's sink offers its verdict and summary tools mutually exclusively per turn, switching which one is advertised before each call rather than exposing both at once (TDD 6.10). Kiro CLI is the MVP session harness; Ollama is the MVP one-shot backend. Before creating a fresh session harness, sweeps and kills any pre-existing `GSB-Harvester-*` tmux session older than a generous age floor (TDD 6.7a) — a backstop against a prior run's harness surviving a hard process kill that skipped its own cleanup. |
 | `store` | Owns the YAML source of truth: read, validate, merge (preserving operator-set state), and write `!pr`, `!issue`, and `!pinned-pr` documents, preserving unrecognized tags verbatim. Serializes concurrent writers (the pipeline and the pin/unpin CLI) with an exclusive sibling lockfile (`<store>.lock`) held across each writer's read→write section, reclaimed by an age floor if a hard kill orphans it (TDD P.9). |
 | `render` | Pure function from the store to the Markdown status document; owns the layout that reproduces the established structure and the issues sections appended below it. |
-| `notify` | Owns the notification hook: collects the PRs/issues whose bucket this run differs from their prior stored bucket (any transition, including into or out of merged/closed/stale), asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
+| `notify` | Owns the notification hook: collects the PRs/issues whose hard status fields differ from their prior stored record, resolves note-only differences through the Prose Diff Checker (one batch `Summarize`-shaped call, with the fallback provider as its backstop, TDD 9.9 to 9.16), asks the provider (via `Summarize`) for a one-sentence summary, and delivers the resulting JSON payload to a configured shell command's stdin. Sanitizes every model-derived text field before it is used, both preventatively (before it enters the summary prompt) and at the payload boundary (TDD 9.6), so a downstream consumer cannot be tricked into command injection by GitHub-sourced content. Best-effort and optional: inert when unconfigured, non-fatal on failure. |
 | `schedule` | Platform seam for unattended execution (launchd/cron artifacts) and for resolving the host's conventional per-user data directory; isolated so the core carries no OS-specific dependency. |
 
 ## Concurrency model
@@ -165,6 +170,6 @@ count, since it is invoked only on primary exhaustion rather than on every item.
 There is no shared mutable state across the pipeline stages — each stage consumes the
 prior stage's output and produces the next stage's input. The notification
 hook, when it fires, runs after render as one final sequential step — it is
-not part of the classify stage's fan-out and makes at most one additional
-provider call (the summary) plus one hook subprocess, both bounded by their
+not part of the classify stage's fan-out and makes at most two additional
+provider calls (the Prose Diff Checker batch, then the summary) plus one hook subprocess, both bounded by their
 own timeouts.

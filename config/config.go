@@ -90,6 +90,20 @@ const (
 	// must not meaningfully delay the next scheduled run.
 	DefaultNotifyTimeout = 10 * time.Second
 
+	// DefaultProseDiffTimeout bounds one Prose Diff Checker call (TDD 9.13).
+	// The call is a short batch answered in one line, so it is far tighter than
+	// a classification call.
+	DefaultProseDiffTimeout = 60 * time.Second
+
+	// DefaultProseDiffKiroModel is the Prose Diff Checker's model when its slot
+	// resolves to the kiro provider and GSB_PROSE_DIFF_MODEL is unset (TDD 9.13):
+	// a small, cheap model, since the verdict is one word per item.
+	DefaultProseDiffKiroModel = "claude-haiku-4.5"
+
+	// ProseDiffKiroProvider names the provider whose checker model defaults to
+	// DefaultProseDiffKiroModel.
+	ProseDiffKiroProvider = "kiro"
+
 	// StoreFileName / OutputFileName are the artifact filenames. They are fixed,
 	// not configurable: the *location* is the operator's choice (see
 	// DefaultStorePath / DefaultOutputPath and the path overrides), while the
@@ -131,6 +145,9 @@ const (
 	EnvIncludeTerminal         = "GSB_INCLUDE_TERMINAL"
 	EnvNotifyHook              = "GSB_NOTIFY_HOOK"
 	EnvNotifyTimeout           = "GSB_NOTIFY_TIMEOUT"
+	EnvProseDiffProvider       = "GSB_PROSE_DIFF_PROVIDER"
+	EnvProseDiffModel          = "GSB_PROSE_DIFF_MODEL"
+	EnvProseDiffTimeout        = "GSB_PROSE_DIFF_TIMEOUT"
 )
 
 // Config is the validated runtime configuration for one invocation.
@@ -203,6 +220,31 @@ type Config struct {
 	// 9.5). Exceeding it, a non-zero exit, or a failure to start are all
 	// logged and non-fatal to the run.
 	NotifyTimeout time.Duration
+
+	// ProseDiffProvider and ProseDiffModel describe the Prose Diff Checker's own
+	// provider slot (TDD 9.13), built through the same path as the primary and
+	// fallback slots. Empty values mean "use the default": see ProseDiffSlot.
+	ProseDiffProvider string
+	ProseDiffModel    string
+	// ProseDiffTimeout bounds one Prose Diff Checker call, independently of the
+	// primary's and the fallback's timeouts (TDD 9.13). Its fallback call is
+	// bounded by three times this value (TDD 9.14).
+	ProseDiffTimeout time.Duration
+}
+
+// ProseDiffSlot resolves the Prose Diff Checker's provider name and model
+// (TDD 9.13): the name defaults to the primary's, and the model defaults to a
+// small cheap one for kiro and to the provider's own default (empty) otherwise.
+func (c Config) ProseDiffSlot() (name, model string) {
+	name = c.ProseDiffProvider
+	if name == "" {
+		name = c.Provider
+	}
+	model = c.ProseDiffModel
+	if model == "" && name == ProseDiffKiroProvider {
+		model = DefaultProseDiffKiroModel
+	}
+	return name, model
 }
 
 // Default returns a Config populated with the default constants. The GitHub
@@ -225,6 +267,7 @@ func Default() Config {
 		OutputPath:              DefaultOutputPath(),
 		NotifyTimeout:           DefaultNotifyTimeout,
 		FallbackProviderTimeout: DefaultFallbackProviderTimeout,
+		ProseDiffTimeout:        DefaultProseDiffTimeout,
 	}
 }
 
@@ -301,6 +344,19 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		c.NotifyTimeout = d
 	}
+	if v := getenv(EnvProseDiffProvider); v != "" {
+		c.ProseDiffProvider = v
+	}
+	if v := getenv(EnvProseDiffModel); v != "" {
+		c.ProseDiffModel = v
+	}
+	if v := getenv(EnvProseDiffTimeout); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvProseDiffTimeout, v, err)
+		}
+		c.ProseDiffTimeout = d
+	}
 
 	if err := c.Validate(); err != nil {
 		return Config{}, err
@@ -348,6 +404,9 @@ func (c Config) Validate() error {
 	}
 	if c.FallbackProviderTimeout <= 0 {
 		return fmt.Errorf("fallback provider timeout must be positive, got %s", c.FallbackProviderTimeout)
+	}
+	if c.ProseDiffTimeout <= 0 {
+		return fmt.Errorf("prose diff timeout must be positive, got %s", c.ProseDiffTimeout)
 	}
 	if c.ClassifyWorkers < 1 {
 		return fmt.Errorf("classify workers must be >= 1, got %d", c.ClassifyWorkers)

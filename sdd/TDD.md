@@ -16,7 +16,7 @@ change in front of you.
 | 6 | Provider / LLM hand-off | 6.1 – 6.18 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
-| 9 | Notification hook | 9.1 – 9.8 |
+| 9 | Notification hook | 9.1 – 9.16 |
 
 ## Configurable constants referenced below
 
@@ -755,14 +755,14 @@ reference them by name.
   configured — the fallback does not get a separate, larger retry budget or a
   further fallback of its own
 
-### 6.15 Fallback applies to both classification and summarization
+### 6.15 Fallback applies to classification, summarization, and the Prose Diff Checker
 - **Given** a fallback provider is configured
-- **When** either a classification (`Invoke`) or a notification summary
-  (`Summarize`) call to the primary provider fails
+- **When** a classification (`Invoke`), a notification summary (`Summarize`),
+  or a Prose Diff Checker call (9.14) to its primary provider fails
 - **Then** the same fallback provider is invoked for that call, using the same
   trigger rule (6.13) appropriate to that call's own retry shape (`Invoke`'s
   multi-retry loop per 6.4, `Summarize`'s single-attempt-then-plain-fallback
-  per 6.9)
+  per 6.9, the Prose Diff Checker's single attempt then fail-loud per 9.15)
 
 ### 6.16 Every exhaustion and fallback outcome is logged at a level matching its severity, and a fallback verdict is persisted with provenance
 - **Given** the primary provider's retry budget is exhausted (6.13)
@@ -960,7 +960,9 @@ and an issue with no conversation is never sent to the model.
 - **And** the signature is built from the fields that constitute the item's
   disposition — bucket, action (which fully determines the reviewer
   ball-holding a reader sees), the CI flag, priority, emoji, companion,
-  close-reason, and the `LastActivity` timestamp — but **not** any
+  close-reason, and the `LastActivity` timestamp, where a difference in only
+  the emoji and companion prose is resolved by 9.9 to 9.11 rather than
+  counting as a change outright — but **not** any
   `now`-relative value (Age, the rendered Updated column), which changes every
   run regardless of any judgment and would otherwise fire on every live item
 - **And** an item whose signature did not change never appears in the set, even
@@ -1106,6 +1108,79 @@ and an issue with no conversation is never sent to the model.
 
 An operator pin is a standing instruction to track a specific PR under a chosen
 role, whether or not any GitHub search discovers it. The pin is its own
+### 9.9 A prose-only difference is not counted as a change outright
+- **Given** an item whose hard fields (bucket, action, CI flag, priority,
+  close-reason, `LastActivity`) are identical to its prior stored record's, and
+  whose companion note or emoji differs from the prior record's
+- **When** the tool determines whether to notify (9.1)
+- **Then** the item is held back from the changed set and routed to the Prose
+  Diff Checker (9.10) instead
+- **And** an item with any hard-field difference is counted as changed
+  immediately and is never routed to the Prose Diff Checker
+- **Note** a re-judged item reworded its note while nothing about it had moved,
+  and each reword fired a notification
+
+### 9.10 The Prose Diff Checker judges the run's held-back items in one batch
+- **Given** the items held back by 9.9 in one run
+- **When** at least one item is held back
+- **Then** the old and new note and emoji of every held-back item are sent to
+  the Prose Diff Checker in a single call, which judges each pair on whether
+  the new note differs in meaning from the old
+- **And** when no item is held back, the Prose Diff Checker is not called at
+  all
+- **Note** the Prose Diff Checker is a small, cheap model; one call per run
+  keeps its cost independent of how many items were reworded
+
+### 9.11 Only a meaningful difference joins the changed set
+- **Given** the Prose Diff Checker's verdict for a held-back item
+- **When** it judges the new note meaningfully different from the old
+- **Then** the item joins the changed set and appears in the hook payload
+- **And** when it judges the notes equivalent, the item never notifies
+
+### 9.12 The stored record always takes the new note
+- **Given** a held-back item, whatever the Prose Diff Checker decides
+- **When** the tool persists the run
+- **Then** the stored record carries the freshly judged note and emoji, never
+  the prior ones
+
+### 9.13 The Prose Diff Checker is its own provider slot
+- **Given** `GSB_PROSE_DIFF_PROVIDER` (default: the primary's provider name) and
+  `GSB_PROSE_DIFF_MODEL` (default: `claude-haiku-4.5` for `kiro`, otherwise the
+  provider's own default)
+- **When** the slot is constructed
+- **Then** it goes through the same construction path as the primary and
+  fallback slots (6.12), and any supported provider name, including `ollama`,
+  may fill it
+- **And** each call is bounded by its own timeout, `GSB_PROSE_DIFF_TIMEOUT`,
+  independent of the primary's and the fallback's
+
+### 9.14 The Prose Diff Checker falls back like summarization does
+- **Given** a fallback provider is configured (6.12)
+- **When** the Prose Diff Checker's single attempt fails, times out, or returns
+  a response that cannot be parsed
+- **Then** the same fallback provider gets its own single attempt at the same
+  batch (6.15), bounded by three times `GSB_PROSE_DIFF_TIMEOUT` (the same rule
+  as the summary's fallback)
+- **And** the outcome is logged at the levels of 6.16: WARN when the primary
+  fails and the fallback will be tried, INFO when the fallback succeeds, ERROR
+  when it also fails
+- **Note** a local model suits this call: the prompt is a few short sentences
+  per item and the answer is a one-word verdict per item
+
+### 9.15 A checker failure notifies rather than hiding a change
+- **Given** the Prose Diff Checker and its fallback (if any) both failed for
+  the batch, or the batch response has no parseable verdict for an item
+- **When** the tool builds the changed set
+- **Then** every item without a verdict is counted as changed, the failure is
+  logged at WARN naming the number of items affected, and the run continues
+- **Note** a failed check must not silently swallow a change the operator
+  wanted; a false alarm is the cheaper error here
+
+### 9.16 The Prose Diff Checker's prompt carries only sanitized text
+- **Given** the old and new notes of a held-back item, both derived from
+  untrusted GitHub content
+- **When** the batch prompt is built
+- **Then** each note is sanitized as in 9.6 before it enters the prompt
 `!pinned-pr` document, separate from the `!pr` record it produces, so operator
 intent and derived state stay cleanly separated. These rubrics span acquisition
 (§1), the store (§2), render (§3), and a pin-mutation CLI.

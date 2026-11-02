@@ -127,10 +127,14 @@ below); `sdd/SCHEMA.md` documents the exact request and response shapes.
 ## Notification hook
 
 Beyond the status document, the tool can prompt you to look at it: after a run
-in which at least one PR or issue transitioned to a different bucket than it
-had before — including a merge, a close, going stale, or coming back from
-stale — it asks the provider for a one-sentence summary and writes a small
-JSON payload to a command of your choosing.
+in which at least one PR or issue changed status — a move to a different bucket,
+a new action, a raised priority, a failing build, or new activity — it asks the
+provider for a one-sentence summary and writes a small JSON payload to a command
+of your choosing. A model rewording an item's note, with nothing else changed,
+is checked by a small model (the Prose Diff Checker, set with
+`GSB_PROSE_DIFF_PROVIDER`, `GSB_PROSE_DIFF_MODEL` and `GSB_PROSE_DIFF_TIMEOUT`)
+and only notifies when the meaning differs. It uses your fallback provider if its
+own attempt fails.
 
 ```bash
 export GSB_NOTIFY_HOOK="$PWD/examples/notify-hook/notify-desktop.sh"

@@ -345,6 +345,12 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 // never propagated: a broken notification integration must never be the thing
 // that fails the run (TDD 9.5).
 //
+// An item whose only difference is its note or emoji is held back rather than
+// counted: with a hook configured, the Prose Diff Checker judges all held-back
+// items in one batch and only those it finds meaningfully different, or could
+// not judge, join the changed set (TDD 9.9-9.15). With no hook configured the
+// checker is never built or called.
+//
 // The per-run decision is logged at INFO whatever the outcome — fired, inert
 // (no hook configured), or nothing changed — so a run that correctly stayed
 // quiet is always distinguishable in the log from one that silently swallowed a
@@ -352,12 +358,23 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 // #13, whose defect hid precisely because the skip logged at Debug).
 func fireNotifyHook(ctx context.Context, cfg config.Config, prov, fallback provider.Provider, prs []model.PR, issues []model.Issue, log *slog.Logger) {
 	changed := append(notify.ChangesFromPRs(prs), notify.ChangesFromIssues(issues)...)
-	if len(changed) == 0 {
+	held := append(notify.HeldBackFromPRs(prs), notify.HeldBackFromIssues(issues)...)
+	if len(changed) == 0 && len(held) == 0 {
 		log.Info("notify: no status changed this run, hook not fired", "changed", 0)
 		return
 	}
 	if cfg.NotifyHook == "" {
-		log.Info("notify: status changed but hook not configured, inert", "changed", len(changed))
+		log.Info("notify: status changed but hook not configured, inert", "changed", len(changed), "held_back", len(held))
+		return
+	}
+
+	if len(held) > 0 {
+		meaningful := checkProse(ctx, cfg, prov, fallback, held, log)
+		log.Info("notify: prose diff checked", "held_back", len(held), "counted_as_changed", len(meaningful))
+		changed = append(changed, meaningful...)
+	}
+	if len(changed) == 0 {
+		log.Info("notify: no status changed this run, hook not fired", "changed", 0, "held_back", len(held))
 		return
 	}
 
@@ -559,3 +576,50 @@ func tccRemediation(dir string, cause error) error {
 			"ALTERNATIVE: set GSB_OUTPUT_PATH to a non-protected location (e.g. under ~/.local/share).",
 		dir, cause, exe)
 }
+
+// buildProseDiffProvider constructs the Prose Diff Checker's provider slot
+// through the same path as the primary and fallback slots (TDD 9.13), returning
+// a close function for it. It is a variable so tests can substitute a fake. When
+// the slot resolves to exactly the primary's provider and model, the primary
+// instance is reused rather than started a second time.
+var buildProseDiffProvider = func(cfg config.Config, primary provider.Provider) (provider.Provider, func(), error) {
+	name, mdl := cfg.ProseDiffSlot()
+	if primary != nil && name == cfg.Provider && mdl == cfg.Model {
+		return primary, func() {}, nil
+	}
+	p, err := provider.NewFromOptions(provider.Options{
+		Name:         name,
+		Model:        mdl,
+		ReadyTimeout: cfg.ProviderReadyTimeout,
+		Settle:       cfg.ProviderIdleSettle,
+		PoolSize:     1,
+	})
+	if err != nil {
+		return nil, func() {}, err
+	}
+	closeFn := func() {}
+	if closer, ok := p.(interface{ Close() error }); ok {
+		closeFn = func() { _ = closer.Close() }
+	}
+	return p, closeFn, nil
+}
+
+// checkProse runs the Prose Diff Checker over the held-back items and returns
+// the changes to add to the changed set (TDD 9.10-9.15). The checker's slot is
+// built only now, when there is something to check, so a quiet run never pays a
+// harness start-up. A slot that cannot be built is a failed attempt, which
+// proceeds to the fallback and then to counting the items as changed.
+func checkProse(ctx context.Context, cfg config.Config, prov, fallback provider.Provider, held []notify.Held, log *slog.Logger) []notify.Change {
+	checker, closeFn, err := buildProseDiffProvider(cfg, prov)
+	if err != nil {
+		log.Warn("prose diff: could not build the checker provider", "err", err)
+		checker = nil
+	}
+	defer closeFn()
+	return notify.CheckProse(ctx, checker, fallback, held, cfg.ProseDiffTimeout, cfg.ProseDiffTimeout*proseDiffFallbackTimeoutFactor, log)
+}
+
+// proseDiffFallbackTimeoutFactor scales the Prose Diff Checker's timeout into
+// its fallback call's bound (TDD 9.14), the same factor the summary's fallback
+// applies to the notify timeout.
+const proseDiffFallbackTimeoutFactor = 3

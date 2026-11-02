@@ -207,3 +207,52 @@ func TestValidate(t *testing.T) {
 		t.Error("zero stale threshold should error")
 	}
 }
+
+func TestProseDiffDefaults(t *testing.T) {
+	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	name, model := c.ProseDiffSlot()
+	if name != DefaultProvider || model != DefaultProseDiffKiroModel {
+		t.Errorf("slot = %q/%q, want the primary's name with the small kiro model (TDD 9.13)", name, model)
+	}
+	if c.ProseDiffTimeout != DefaultProseDiffTimeout {
+		t.Errorf("timeout = %s, want %s", c.ProseDiffTimeout, DefaultProseDiffTimeout)
+	}
+}
+
+func TestProseDiffOverrides(t *testing.T) {
+	c, err := Load(fakeEnv(map[string]string{
+		EnvGitHubToken:       "tok",
+		EnvProseDiffProvider: "ollama",
+		EnvProseDiffModel:    "tiny",
+		EnvProseDiffTimeout:  "20s",
+	}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	name, model := c.ProseDiffSlot()
+	if name != "ollama" || model != "tiny" || c.ProseDiffTimeout != 20*time.Second {
+		t.Errorf("slot = %q/%q timeout = %s, want ollama/tiny and 20s", name, model, c.ProseDiffTimeout)
+	}
+}
+
+func TestProseDiffNonKiroProviderUsesItsOwnDefaultModel(t *testing.T) {
+	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok", EnvProseDiffProvider: "ollama"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, model := c.ProseDiffSlot(); model != "" {
+		t.Errorf("model = %q, want empty (the provider's own default) for a non-kiro slot (TDD 9.13)", model)
+	}
+}
+
+func TestProseDiffRejectsBadTimeout(t *testing.T) {
+	if _, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok", EnvProseDiffTimeout: "soon"})); err == nil {
+		t.Error("an unparseable GSB_PROSE_DIFF_TIMEOUT must be rejected")
+	}
+	if _, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok", EnvProseDiffTimeout: "0s"})); err == nil {
+		t.Error("a non-positive GSB_PROSE_DIFF_TIMEOUT must be rejected")
+	}
+}

@@ -68,6 +68,9 @@ func (c *Classifier) classifyIssue(ctx context.Context, iss model.Issue) model.I
 	// to diff against. Otherwise it notifies when any part of its status moved
 	// this run, not only its bucket (TDD 9.2; ANTI-PATTERNS #13).
 	out.StatusChanged = hadPrior && issueStatusSignature(out) != issueStatusSignature(prior)
+	if hadPrior && !out.StatusChanged {
+		out.ProseHeldBack = proseChange(out.Companion, out.Emoji, prior.Companion, prior.Emoji)
+	}
 	return out
 }
 

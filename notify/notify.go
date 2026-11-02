@@ -74,20 +74,9 @@ const (
 func ChangesFromPRs(prs []model.PR) []Change {
 	var out []Change
 	for _, p := range prs {
-		if !p.StatusChanged {
-			continue
+		if p.StatusChanged {
+			out = append(out, prChange(p))
 		}
-		out = append(out, Change{
-			Entity:    entityPR,
-			Repo:      p.Repo,
-			Number:    p.Number,
-			URL:       p.URL,
-			Role:      string(p.Role),
-			Bucket:    string(p.Bucket),
-			Action:    string(p.Action),
-			Companion: p.Companion,
-			Priority:  string(p.Priority),
-		})
 	}
 	return out
 }
@@ -97,22 +86,39 @@ func ChangesFromPRs(prs []model.PR) []Change {
 func ChangesFromIssues(issues []model.Issue) []Change {
 	var out []Change
 	for _, i := range issues {
-		if !i.StatusChanged {
-			continue
+		if i.StatusChanged {
+			out = append(out, issueChange(i))
 		}
-		out = append(out, Change{
-			Entity:    entityIssue,
-			Repo:      i.Repo,
-			Number:    i.Number,
-			URL:       i.URL,
-			Role:      string(i.Role),
-			Bucket:    string(i.Bucket),
-			Action:    string(i.Action),
-			Companion: i.Companion,
-			Priority:  string(i.Priority),
-		})
 	}
 	return out
+}
+
+func prChange(p model.PR) Change {
+	return Change{
+		Entity:    entityPR,
+		Repo:      p.Repo,
+		Number:    p.Number,
+		URL:       p.URL,
+		Role:      string(p.Role),
+		Bucket:    string(p.Bucket),
+		Action:    string(p.Action),
+		Companion: p.Companion,
+		Priority:  string(p.Priority),
+	}
+}
+
+func issueChange(i model.Issue) Change {
+	return Change{
+		Entity:    entityIssue,
+		Repo:      i.Repo,
+		Number:    i.Number,
+		URL:       i.URL,
+		Role:      string(i.Role),
+		Bucket:    string(i.Bucket),
+		Action:    string(i.Action),
+		Companion: i.Companion,
+		Priority:  string(i.Priority),
+	}
 }
 
 // fallbackSummary builds a plain, non-model summary sentence for when the

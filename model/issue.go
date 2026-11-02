@@ -72,10 +72,14 @@ type Issue struct {
 	Events []Event `yaml:"-" json:"-"`
 
 	// StatusChanged is true when this run's status signature for the issue
-	// differs from that of its prior stored record, mirroring model.PR's field
-	// for the same reason (TDD 9.1, 9.2) — a run-local signal for the
-	// notification hook's change collection, never persisted.
+	// differs from that of its prior stored record in a hard field, mirroring
+	// model.PR's field for the same reason (TDD 9.1, 9.2) — a run-local signal
+	// for the notification hook's change collection, never persisted.
 	StatusChanged bool `yaml:"-" json:"-"`
+
+	// ProseHeldBack mirrors model.PR's field: non-nil when only the companion
+	// note or emoji differs from the prior stored record (TDD 9.9).
+	ProseHeldBack *ProseChange `yaml:"-" json:"-"`
 }
 
 // Key uniquely identifies an issue across the tracked set and the store. It

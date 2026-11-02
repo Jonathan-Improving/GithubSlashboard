@@ -99,6 +99,9 @@ below at any location you prefer.
 | Issue stale age threshold | `GSB_ISSUE_STALE_AGE_THRESHOLD` | — | `2880h` (120 days) |
 | Notification hook command | `GSB_NOTIFY_HOOK` | — | _(unset — inert)_ |
 | Notification hook timeout | `GSB_NOTIFY_TIMEOUT` | — | `10s` |
+| Prose Diff Checker provider | `GSB_PROSE_DIFF_PROVIDER` | — | _(the primary provider)_ |
+| Prose Diff Checker model | `GSB_PROSE_DIFF_MODEL` | — | `claude-haiku-4.5` for `kiro`, otherwise the provider's own default |
+| Prose Diff Checker timeout | `GSB_PROSE_DIFF_TIMEOUT` | — | `60s` (its fallback call gets three times this) |
 | Verbose logging | — | `-verbose` | off |
 
 For example, to write the status document to a location of your choosing:
