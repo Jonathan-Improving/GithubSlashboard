@@ -696,19 +696,26 @@ reference them by name.
   into `Events`, stretching a contract that is otherwise clean and
   entity-generic in a principled way
 
-### 6.10 A session provider's two tools are mutually exclusive per turn
+### 6.10 A session provider lists both tools but accepts one per turn
 - **Given** a session harness that can be asked either for a classification
   verdict or for a summary
-- **When** either kind of turn begins
-- **Then** the harness is offered exactly one tool for that turn — the one
-  matching what was actually asked — never both at once
-- **And** which tool is offered is switched by the provider itself before the
-  turn starts, not left to the harness to infer from prompt wording alone,
-  because two simultaneously-callable tools invite the model to guess wrong
-  about which one this turn wants
+- **When** the harness connects
+- **Then** the tool list names both tools, and stays the same whichever kind
+  of turn comes next
+- **And** when either kind of turn begins, the provider itself switches which
+  one tool the turn accepts, matching what was actually asked, rather than
+  leaving it to the harness to infer from prompt wording alone
+- **And** a call to the tool the turn is not asking for is refused with an
+  error result that names the right tool, is never taken as the turn's result,
+  and does not end the harness's turn
 - **And** the underlying agent profile trusts both tool names from the start (a
   static pre-approval list, set once at session construction), so switching
-  which one is offered never triggers an interactive trust prompt mid-session
+  which one is accepted never triggers an interactive trust prompt mid-session
+- **Note** the harness reads the tool list once, when it connects, and not
+  again; a list that named only the tool active at that moment left the other
+  tool unknown to the harness for the whole session, and every summary turn
+  failed against a live kiro-cli while a test that re-listed after the switch
+  stayed green (ANTI-PATTERNS #15)
 
 ### 6.11 A provider's kind is fixed by its name, never independently configured
 - **Given** a provider name (`kiro`, `ollama`, or any future name)
@@ -1101,13 +1108,6 @@ and an issue with no conversation is never sent to the model.
   change-detector that fails by *not firing* leaves no error to notice, so its
   decision must be visible where the operator will actually see it
 
-
----
-
-## 10. Operator pins
-
-An operator pin is a standing instruction to track a specific PR under a chosen
-role, whether or not any GitHub search discovers it. The pin is its own
 ### 9.9 A prose-only difference is not counted as a change outright
 - **Given** an item whose hard fields (bucket, action, CI flag, priority,
   close-reason, `LastActivity`) are identical to its prior stored record's, and
@@ -1181,6 +1181,13 @@ role, whether or not any GitHub search discovers it. The pin is its own
   untrusted GitHub content
 - **When** the batch prompt is built
 - **Then** each note is sanitized as in 9.6 before it enters the prompt
+
+---
+
+## 10. Operator pins
+
+An operator pin is a standing instruction to track a specific PR under a chosen
+role, whether or not any GitHub search discovers it. The pin is its own
 `!pinned-pr` document, separate from the `!pr` record it produces, so operator
 intent and derived state stay cleanly separated. These rubrics span acquisition
 (§1), the store (§2), render (§3), and a pin-mutation CLI.

@@ -497,7 +497,7 @@ directory, and the file is deleted once the verdict is collected.
 harness's provisioned agent profile enables exactly two tools — this verdict sink
 and a path-scoped read tool — and points the sink at its URL. The sink handles
 `initialize` (returns `protocolVersion` and sets the
-`Mcp-Session-Id` header), `tools/list` (advertises this one tool), `tools/call`
+`Mcp-Session-Id` header), `tools/list` (advertises both tools, see Summarize contract), `tools/call`
 (receives the verdict), `ping`, and the `notifications/initialized` lifecycle
 notification.
 
@@ -687,16 +687,17 @@ self-correcting retry loop. A failed attempt falls back to a plain non-model
 string rather than retrying — a wrong or missing toast sentence is a
 notification inconvenience, not a misjudged PR status.
 
-For the session provider, the harness's classification and summarization tools
-are mutually exclusive **per turn** (TDD 6.10): the sink advertises exactly one
-of `submit_verdict` or `submit_summary` in `tools/list` depending on which kind
-of request is in flight, so the model is never offered two callable tools at
-once and left to guess which one this turn wants. The agent profile trusts both
-tool names from session construction (a static pre-approval list), so toggling
-which one is advertised never triggers an interactive trust prompt mid-session.
+For the session provider, the sink lists both `submit_verdict` and
+`submit_summary` in `tools/list` and accepts exactly one **per turn** (TDD 6.10),
+the one matching the kind of request in flight. The list stays the same because a
+harness reads it once, when it connects. A call to the tool the turn is not asking
+for gets an error tool result (`isError: true`) naming the right tool, and is
+never taken as the turn's result. The agent profile trusts both tool names from
+session construction (a static pre-approval list), so switching which one is
+accepted never triggers an interactive trust prompt mid-session.
 
 **`submit_summary` tool schema:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `summary` | `string` | yes | One short sentence, the same value that lands in the payload's top-level `summary` field. |
+| `summary` | `string` | yes | The turn's short text answer, exactly as its instructions describe it. For a notification summary that is one short sentence, the same value that lands in the payload's top-level `summary` field. For the Prose Diff Checker (TDD 9.10) it is a single line of `ID=YES` / `ID=NO` pairs. |

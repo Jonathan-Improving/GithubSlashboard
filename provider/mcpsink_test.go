@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,16 +57,15 @@ func TestMCPSinkHandshakeAndVerdict(t *testing.T) {
 	}
 	sessionID := hdr.Get("Mcp-Session-Id")
 
-	// tools/list: advertises the single active tool (verdict by default).
+	// tools/list: advertises both tools (TDD 6.10).
 	env, _ = post(t, url, sessionID, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	result, _ = env["result"].(map[string]any)
 	tools, _ := result["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools/list returned %d tools, want 1", len(tools))
+	if len(tools) != 2 {
+		t.Fatalf("tools/list returned %d tools, want 2", len(tools))
 	}
-	tool, _ := tools[0].(map[string]any)
-	if tool["name"] != "submit_verdict" {
-		t.Errorf("tool name = %v", tool["name"])
+	if got := toolNames(tools); got[0] != "submit_verdict" || got[1] != "submit_summary" {
+		t.Errorf("tool names = %v", got)
 	}
 
 	// tools/call: the arguments become the raw verdict surfaced to Await.
@@ -124,12 +124,63 @@ func TestMCPSinkUnknownToolErrors(t *testing.T) {
 	}
 }
 
-// TestMCPSinkToolsAreMutuallyExclusive covers TDD 6.10: tools/list reports
-// only whichever tool is currently active, never both, and switching the
-// active tool immediately changes what tools/list reports and what
-// tools/call accepts — proving genuine per-turn exclusivity, not just prompt
-// wording.
-func TestMCPSinkToolsAreMutuallyExclusive(t *testing.T) {
+// toolNames returns the names in a tools/list result, in order.
+func toolNames(tools []any) []string {
+	var out []string
+	for _, tl := range tools {
+		m, _ := tl.(map[string]any)
+		name, _ := m["name"].(string)
+		out = append(out, name)
+	}
+	return out
+}
+
+// isErrorResult reports whether a tools/call response is a successful JSON-RPC
+// response carrying a tool result flagged isError, which is how the sink refuses
+// a call to the tool the current turn is not asking for (TDD 6.10).
+func isErrorResult(env map[string]any) (string, bool) {
+	result, _ := env["result"].(map[string]any)
+	if flagged, _ := result["isError"].(bool); !flagged {
+		return "", false
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		return "", true
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	return text, true
+}
+
+// TestMCPSinkListsBothToolsWhicheverIsActive covers TDD 6.10: a harness reads
+// tools/list once, when it connects, and never again, so the list must name both
+// tools whichever one the next turn accepts. A list that hid the summary tool at
+// connect time made every summary turn fail against a live kiro-cli, because the
+// harness could never call a tool it had not been told about (ANTI-PATTERNS #15).
+func TestMCPSinkListsBothToolsWhicheverIsActive(t *testing.T) {
+	sink, err := newMCPSink("submit_verdict", "submit_summary")
+	if err != nil {
+		t.Fatalf("newMCPSink: %v", err)
+	}
+	defer sink.Close()
+
+	for _, active := range []string{"submit_verdict", "submit_summary"} {
+		sink.SetActiveTool(active)
+		env, _ := post(t, sink.Endpoint(), "sess", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		result, _ := env["result"].(map[string]any)
+		tools, _ := result["tools"].([]any)
+		names := toolNames(tools)
+		if len(names) != 2 || names[0] != "submit_verdict" || names[1] != "submit_summary" {
+			t.Errorf("active=%s: tools/list = %v, want both tools", active, names)
+		}
+	}
+}
+
+// TestMCPSinkAcceptsTheSummaryToolAfterAConnectTimeList replays what a real
+// client does: list once while the verdict tool is active, then be asked for a
+// summary after the sink switches. The summary call must be accepted and
+// surfaced to Await (TDD 6.10).
+func TestMCPSinkAcceptsTheSummaryToolAfterAConnectTimeList(t *testing.T) {
 	sink, err := newMCPSink("submit_verdict", "submit_summary")
 	if err != nil {
 		t.Fatalf("newMCPSink: %v", err)
@@ -137,47 +188,12 @@ func TestMCPSinkToolsAreMutuallyExclusive(t *testing.T) {
 	defer sink.Close()
 	url := sink.Endpoint()
 
-	// Default active tool is the verdict tool.
-	env, _ := post(t, url, "sess", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	result, _ := env["result"].(map[string]any)
-	tools, _ := result["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools/list returned %d tools, want exactly 1", len(tools))
-	}
-	if tool, _ := tools[0].(map[string]any); tool["name"] != "submit_verdict" {
-		t.Errorf("default active tool = %v, want submit_verdict", tool["name"])
-	}
-
-	// Calling the inactive (summary) tool while verdict is active is rejected.
-	env, _ = post(t, url, "sess",
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_summary","arguments":{"summary":"x"}}}`)
-	if _, ok := env["error"]; !ok {
-		t.Error("calling the inactive tool should return a JSON-RPC error")
-	}
-
-	// Switch to summary mode: tools/list now reports only submit_summary.
+	post(t, url, "sess", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	sink.SetActiveTool("submit_summary")
-	env, _ = post(t, url, "sess", `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
-	result, _ = env["result"].(map[string]any)
-	tools, _ = result["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools/list returned %d tools after switch, want exactly 1", len(tools))
-	}
-	if tool, _ := tools[0].(map[string]any); tool["name"] != "submit_summary" {
-		t.Errorf("active tool after switch = %v, want submit_summary", tool["name"])
-	}
 
-	// Now the verdict tool (formerly active) is the one rejected.
-	env, _ = post(t, url, "sess",
-		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"submit_verdict","arguments":{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting","emoji":"⏳"}}}`)
-	if _, ok := env["error"]; !ok {
-		t.Error("calling the now-inactive verdict tool should return a JSON-RPC error")
-	}
-
-	// The active (summary) tool call succeeds and is surfaced to Await.
 	go func() {
 		post(t, url, "sess",
-			`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"submit_summary","arguments":{"summary":"3 PRs changed"}}}`)
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_summary","arguments":{"summary":"3 PRs changed"}}}`)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -186,10 +202,47 @@ func TestMCPSinkToolsAreMutuallyExclusive(t *testing.T) {
 		t.Fatalf("Await: %v", err)
 	}
 	var parsed struct{ Summary string }
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		t.Fatalf("summary result did not parse: %v (raw=%s)", err, raw)
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || parsed.Summary != "3 PRs changed" {
+		t.Errorf("summary result = %q (err %v), want the submitted summary", raw, err)
 	}
-	if parsed.Summary != "3 PRs changed" {
-		t.Errorf("summary = %q, want %q", parsed.Summary, "3 PRs changed")
+}
+
+// TestMCPSinkRefusesTheInactiveToolWithAnErrorResult covers TDD 6.10: a call to
+// the tool this turn is not asking for is refused with an error tool result that
+// names the right tool, is never surfaced to Await, and is not a JSON-RPC error
+// (which would end the harness's turn with nothing the model can act on).
+func TestMCPSinkRefusesTheInactiveToolWithAnErrorResult(t *testing.T) {
+	sink, err := newMCPSink("submit_verdict", "submit_summary")
+	if err != nil {
+		t.Fatalf("newMCPSink: %v", err)
+	}
+	defer sink.Close()
+	url := sink.Endpoint()
+	sink.SetActiveTool("submit_summary")
+
+	env, _ := post(t, url, "sess",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"submit_verdict","arguments":{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting","emoji":"⏳"}}}`)
+	if _, isRPCError := env["error"]; isRPCError {
+		t.Fatalf("a listed-but-inactive tool must not be a JSON-RPC error: %v", env["error"])
+	}
+	text, refused := isErrorResult(env)
+	if !refused {
+		t.Fatalf("calling the inactive verdict tool must return an isError tool result, got %v", env)
+	}
+	if !strings.Contains(text, "submit_summary") {
+		t.Errorf("refusal %q should name the tool to call instead", text)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if raw, err := sink.Await(ctx); err == nil {
+		t.Errorf("a refused call must not be surfaced to Await, got %q", raw)
+	}
+
+	sink.SetActiveTool("submit_verdict")
+	env, _ = post(t, url, "sess",
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_summary","arguments":{"summary":"x"}}}`)
+	if text, refused := isErrorResult(env); !refused || !strings.Contains(text, "submit_verdict") {
+		t.Errorf("calling the now-inactive summary tool = %v, want a refusal naming submit_verdict", env)
 	}
 }

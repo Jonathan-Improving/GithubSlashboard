@@ -130,8 +130,8 @@ func NewFromOptions(o Options) (Provider, error) {
 // verdictToolDefault is the MVP name of the tool the harness calls to return
 // its classification verdict. summaryToolDefault is the MVP name of the tool
 // it calls to return a notification summary sentence (TDD 6.9). Both are
-// closed protocol identifiers, so named constants; the two are mutually
-// exclusive per turn (TDD 6.10), never both offered at once.
+// closed protocol identifiers, so named constants; both are always listed but
+// only one is accepted per turn (TDD 6.10).
 const (
 	verdictToolDefault = "submit_verdict"
 	summaryToolDefault = "submit_summary"
@@ -253,11 +253,11 @@ func kiroSessionArgv(agentName string) []string {
 // provisionKiroProfile writes a Kiro agent profile named agentName that trusts
 // both the verdict and summary MCP tools (TDD 6.10), points it at the sink URL
 // over streamable HTTP, and instructs the model to act only on whichever tool
-// the current turn actually offers. The profile is deliberately narrow (POLICY
+// the current turn asks for. The profile is deliberately narrow (POLICY
 // ratifies exactly these two tools): a bare context plus the sink's two tools.
-// Trusting both here is a one-time, static pre-approval — the sink itself
-// advertises only one per turn (mcpSink.SetActiveTool), so the harness is never
-// actually offered a choice even though the profile trusts both names. It is
+// Trusting both here is a one-time, static pre-approval — the sink lists both
+// (the harness reads the list once, when it connects) and accepts only the one
+// the turn asks for (mcpSink.SetActiveTool). It is
 // written as <workspace>/.kiro/agents/<agentName>.json and the workspace dir is
 // returned so the session can run with it as the working directory (kiro-cli
 // resolves --agent by name from that location). model selects the model the
@@ -277,7 +277,7 @@ func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName, model st
 	profile := map[string]any{
 		"$schema":     "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
 		"name":        agentName,
-		"description": "Bare a-priori PR/issue classifier and notification summarizer that reads its input from a file and returns its result through whichever result MCP tool the current turn offers.",
+		"description": "Bare a-priori PR/issue classifier and notification summarizer that reads its input from a file and returns its result through whichever result MCP tool the current turn asks for.",
 		"model":       model,
 		// Do not merge the global legacy mcp.json: this session must have a bare
 		// context with only the result tools, no unrelated MCP servers, so the
@@ -293,9 +293,8 @@ func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName, model st
 		// Three deliberately-introduced, tightly-scoped capabilities (POLICY):
 		//   - the verdict tool (classification result) and the summary tool
 		//     (notification result) — both trusted here as a static
-		//     pre-approval, but the sink advertises only one per turn
-		//     (TDD 6.10), so the harness is never actually offered a choice
-		//     between them despite both being nominally trusted; and
+		//     pre-approval, and the sink lists both but accepts only the one
+		//     the turn asks for (TDD 6.10); and
 		//   - fs_read, scoped to the prompts directory only, so the harness can
 		//     read the per-request input file (an event trail or a summary
 		//     prompt is too large to type into the session without hitting the
@@ -323,11 +322,12 @@ func provisionKiroProfile(sinkURL, verdictTool, summaryTool, agentName, model st
 			"bucket, action (only if bucket is open), close_reason (only if bucket is closed), priority, " +
 			"companion, and emoji (exactly one emoji character summarizing the note). Every enum value must " +
 			"come from the matching list in the request's constraints. " +
-			"For a summary turn: you are given a short description of what changed. Write exactly one short " +
-			"sentence summarizing it, sized for a desktop notification, and return it by calling the " +
+			"For a short-answer turn: the instructions ask for a short text answer, such as one sentence " +
+			"summarizing what changed (sized for a desktop notification) or a single line of verdicts. " +
+			"Write exactly what they ask for and return it by calling the " +
 			summaryTool + " tool exactly once with field summary. " +
-			"Only one of these two tools is ever offered to you in a given turn — call whichever one the " +
-			"turn's own instructions ask for; do not guess or call a tool that was not asked for. Do not " +
+			"Both tools are listed, but only one is accepted in a given turn — call whichever one the " +
+			"turn's own instructions ask for; a call to the other is refused. Do not " +
 			"print your result as text; only call the tool.",
 	}
 	data, err := json.MarshalIndent(profile, "", "  ")

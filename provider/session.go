@@ -76,8 +76,8 @@ type inputTransport interface {
 // responseSink is the read half of a session: the harness posts its result
 // here (out of band from the terminal) and the provider waits for it. Await
 // blocks until a result arrives for the pending request or ctx expires. It also
-// controls which of the sink's mutually exclusive tools (TDD 6.10) is offered
-// for the turn about to start.
+// controls which of the sink's two tools (TDD 6.10) the turn about to start
+// accepts.
 type responseSink interface {
 	// Await blocks until the harness posts a result or ctx is done. The
 	// returned string is raw JSON (a verdict) or the raw tool arguments (a
@@ -94,7 +94,7 @@ type responseSink interface {
 	// Endpoint reports where the harness should post results (e.g. an MCP
 	// URL), for provisioning the harness profile. Empty when not applicable.
 	Endpoint() string
-	// SetActiveTool switches which tool the sink advertises for the next turn
+	// SetActiveTool switches which tool the sink accepts for the next turn
 	// (TDD 6.10): the verdict tool for a classification, the summary tool for a
 	// summarization. Called before the prompt for that turn is sent.
 	SetActiveTool(name string)

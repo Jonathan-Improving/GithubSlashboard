@@ -60,8 +60,8 @@ understanding before choosing it:
 - The verdict comes back **structurally**, through a Model Context Protocol tool
   the provider hosts on a loopback address, rather than by scraping terminal
   output. A second, separate tool returns a notification summary sentence
-  (below) — the two are mutually exclusive per turn, so the harness is never
-  offered a choice between them.
+  (below) — both are listed, and the provider accepts only the one the current
+  turn asks for.
 - The harness is given exactly three capabilities: a read tool scoped to the
   prompt directory, the verdict tool, and the summary tool. Nothing else — no
   shell, no network, no unrelated servers.

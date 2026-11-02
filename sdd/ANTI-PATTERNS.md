@@ -19,6 +19,8 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 11 | A timed-out GitHub search returns 200 with a silently partial result set | Medium |
 | 12 | A narrower-than-intended notification rule shipped as if it were the full design | Medium |
 | 13 | A notification predicate narrower than the item's status notifies silently-never | Medium |
+| 14 | A store edit made while a pre-lock run is in flight is silently clobbered | Low |
+| 15 | Hiding a tool from an MCP client by changing the list after it connected | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -625,3 +627,49 @@ the protection a lock provides begins with the first run that has it, not with
 the deploy. Severity: Low (one-time migration race, self-correcting once the
 lock-aware binary is live on both writers; no data beyond the single pin was at
 risk, and the store round-trip was never itself faulty).
+
+
+---
+
+## 15. Hiding a tool from an MCP client by changing the list after it connected
+
+**Symptom**: Every notification summary requested from the kiro session provider
+failed after 5 to 10 seconds with `harness ended turn without calling the tool`,
+and the Ollama fallback silently produced every summary instead. The run log
+showed `summarize: primary failed, trying fallback` on essentially every run that
+fired the hook, from the first one onward. Classification on the same provider
+worked throughout.
+
+**What was tried**:
+- Reproduced it against two models and two prompts, which ruled out one model's
+  habits or one prompt's wording.
+- Logged every request the sink received during a live `Summarize`. The harness
+  sent `tools/list` once, at connect, and never again. When asked for a summary
+  it called `submit_verdict` with placeholder arguments, and the sink answered
+  `unknown tool` because the active tool was `submit_summary`.
+
+**Root cause**: The sink advertised only the active tool in `tools/list` and
+declared `listChanged: false`, intending that the harness never see two callable
+tools at once. A harness reads the tool list once when it connects, while the
+verdict tool is active, and has no reason to read it again. The summary tool was
+therefore never known to it, and the protocol error the sink returned for the
+wrong-tool call ended the harness's turn with nothing recorded. The unit test
+passed because it called `tools/list` again after switching the active tool,
+which a real client does not do.
+
+**Resolution**: List both tools every time, and enforce one-per-turn at the call:
+a call to the tool the turn is not asking for returns an error tool result that
+names the right tool, so the model can correct itself, and is never taken as the
+result (TDD 6.10). Verified live: classify, summarize, classify, summarize in one
+session all succeeded.
+
+**Lesson**: A client's view of a server's tool list is fixed at connect time unless
+the server both declares and sends list-change notifications. State that must
+change per turn belongs in what the server accepts, not in what it lists. Test a
+protocol server with the sequence a real client performs, listing once and then
+calling, not with a client written to match the server's design.
+
+**Cost**: Every summary since the notification hook shipped took a failed kiro
+attempt and an Ollama call, adding 15 to 40 seconds to each firing run, and the
+summary wording came from the fallback model. Nothing was lost, because the
+fallback covered it, which is why it went unnoticed. Severity: Medium.
