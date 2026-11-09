@@ -256,3 +256,27 @@ func TestProseDiffRejectsBadTimeout(t *testing.T) {
 		t.Error("a non-positive GSB_PROSE_DIFF_TIMEOUT must be rejected")
 	}
 }
+
+func TestProviderTimeoutDefaultAndOverride(t *testing.T) {
+	// TDD 6.5: the primary's per-call bound is configurable, so a deployment
+	// whose provider is a local model serving one request at a time can raise it.
+	c, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ProviderTimeout != DefaultProviderTimeout {
+		t.Errorf("default provider timeout = %s, want %s", c.ProviderTimeout, DefaultProviderTimeout)
+	}
+
+	c, err = Load(fakeEnv(map[string]string{EnvGitHubToken: "tok", EnvProviderTimeout: "4m"}))
+	if err != nil {
+		t.Fatalf("Load with provider timeout override: %v", err)
+	}
+	if c.ProviderTimeout != 4*time.Minute {
+		t.Errorf("provider timeout = %s, want 4m", c.ProviderTimeout)
+	}
+
+	if _, err := Load(fakeEnv(map[string]string{EnvGitHubToken: "tok", EnvProviderTimeout: "soon"})); err == nil {
+		t.Error("an unparseable provider timeout should fail Load")
+	}
+}

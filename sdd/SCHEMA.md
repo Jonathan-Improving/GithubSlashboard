@@ -385,6 +385,7 @@ notification hook's `Summarize` contract (SCHEMA § Summarize contract).
 |--------|---------|
 | `GSB_PROVIDER` / `GSB_PROVIDER_MODEL` | The primary provider's name and model. |
 | `GSB_FALLBACK_PROVIDER` / `GSB_FALLBACK_PROVIDER_MODEL` | The fallback provider's name and model. Empty `GSB_FALLBACK_PROVIDER` (the default) disables the fallback entirely — behavior is then unchanged from before this feature existed. |
+| `GSB_PROVIDER_TIMEOUT` | Bounds a single primary call (TDD 6.5). Defaults to 90 seconds, which suits a session harness; raise it when the primary is a local model that serves requests one at a time, or every call after the first in a parallel batch times out while queued. |
 | `GSB_FALLBACK_PROVIDER_TIMEOUT` | Bounds a single fallback call, independently of the primary's own timeout (TDD 6.17). Defaults to three times the primary's timeout — discovered necessary by live verification: a one-shot local-model fallback can legitimately take longer per call than a session-based primary, so sharing one bound would either make the fallback unusably tight or make an ordinary primary hang take proportionally longer to detect. |
 
 The hand-off is **generic over entity**. One request shape, one parser, and one

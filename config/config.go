@@ -40,6 +40,8 @@ const (
 	DefaultIssueStaleAgeThreshold = 120 * 24 * time.Hour // 120 days
 
 	// DefaultProviderTimeout bounds a single provider subprocess call (TDD 6.5).
+	// It suits a session harness; a local model serving parallel requests from one
+	// process needs GSB_PROVIDER_TIMEOUT raised.
 	DefaultProviderTimeout = 90 * time.Second
 
 	// DefaultFallbackProviderTimeout bounds a single fallback provider call
@@ -135,6 +137,7 @@ const (
 	EnvGitHubToken             = "GITHUB_TOKEN"
 	EnvProvider                = "GSB_PROVIDER"
 	EnvProviderModel           = "GSB_PROVIDER_MODEL"
+	EnvProviderTimeout         = "GSB_PROVIDER_TIMEOUT"
 	EnvFallbackProvider        = "GSB_FALLBACK_PROVIDER"
 	EnvFallbackProviderModel   = "GSB_FALLBACK_PROVIDER_MODEL"
 	EnvFallbackProviderTimeout = "GSB_FALLBACK_PROVIDER_TIMEOUT"
@@ -285,6 +288,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if v := getenv(EnvProviderModel); v != "" {
 		c.Model = v
+	}
+	if v := getenv(EnvProviderTimeout); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvProviderTimeout, v, err)
+		}
+		c.ProviderTimeout = d
 	}
 	if v := getenv(EnvFallbackProvider); v != "" {
 		c.FallbackProvider = v

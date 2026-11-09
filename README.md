@@ -90,6 +90,7 @@ below at any location you prefer.
 | Read-only GitHub token | `GITHUB_TOKEN` | — | _(required)_ |
 | Provider selection | `GSB_PROVIDER` | — | `kiro` |
 | Provider model | `GSB_PROVIDER_MODEL` | — | `claude-haiku-5.5` (a low-cost model) |
+| Provider timeout (per call) | `GSB_PROVIDER_TIMEOUT` | — | `90s` |
 | Fallback provider selection | `GSB_FALLBACK_PROVIDER` | — | _(unset — no fallback)_ |
 | Fallback provider model | `GSB_FALLBACK_PROVIDER_MODEL` | — | _(provider's own default)_ |
 | Fallback provider timeout | `GSB_FALLBACK_PROVIDER_TIMEOUT` | — | `270s` |
