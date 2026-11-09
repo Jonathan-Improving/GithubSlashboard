@@ -141,6 +141,7 @@ const (
 	EnvFallbackProvider        = "GSB_FALLBACK_PROVIDER"
 	EnvFallbackProviderModel   = "GSB_FALLBACK_PROVIDER_MODEL"
 	EnvFallbackProviderTimeout = "GSB_FALLBACK_PROVIDER_TIMEOUT"
+	EnvDataDir                 = "GSB_DATA_DIR"
 	EnvStorePath               = "GSB_STORE_PATH"
 	EnvOutputPath              = "GSB_OUTPUT_PATH"
 	EnvStaleAgeThreshold       = "GSB_STALE_AGE_THRESHOLD"
@@ -308,6 +309,12 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: invalid duration %q: %w", EnvFallbackProviderTimeout, v, err)
 		}
 		c.FallbackProviderTimeout = d
+	}
+	// The data directory relocates both artifacts at once; the individual path
+	// overrides below still take precedence over it.
+	if v := getenv(EnvDataDir); v != "" {
+		c.StorePath = filepath.Join(v, StoreFileName)
+		c.OutputPath = filepath.Join(v, OutputFileName)
 	}
 	if v := getenv(EnvStorePath); v != "" {
 		c.StorePath = v

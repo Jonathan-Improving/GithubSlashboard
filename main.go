@@ -198,6 +198,9 @@ func pipeline(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// waiting, exactly as an overlapping run is expected to today; that is a
 	// clean skip, not a failure. Released on the normal return path and, via the
 	// signal handler that cancels ctx, on graceful shutdown.
+	if mkerr := os.MkdirAll(filepath.Dir(cfg.StorePath), 0o755); mkerr != nil {
+		return fmt.Errorf("create store directory: %w", mkerr)
+	}
 	lock, err := store.TryAcquire(cfg.StorePath)
 	if err != nil {
 		if errors.Is(err, store.ErrLockBusy) {

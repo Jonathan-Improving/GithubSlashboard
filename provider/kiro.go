@@ -33,6 +33,7 @@ const (
 // primary or fallback slot (TDD 6.12).
 var kindByName = map[string]Kind{
 	"kiro":   KindSession,
+	"claude": KindOneShot,
 	"ollama": KindOneShot,
 }
 

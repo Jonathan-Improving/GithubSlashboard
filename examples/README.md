@@ -39,6 +39,17 @@ export GSB_PROVIDER_MODEL=llama3.2
 The trade-off is process startup: every item pays it. For a small local model this
 is usually irrelevant.
 
+### `claude` — headless Claude Code
+
+A fresh `claude -p` subprocess per item, prompt on stdin. Every built-in tool, MCP
+server, skill, setting source and saved session is disabled, so each call is a bare
+text completion. Pass a model alias or id the `claude` CLI accepts.
+
+```bash
+export GSB_PROVIDER=claude
+export GSB_PROVIDER_MODEL=haiku
+```
+
 ### `kiro` — for the heavyweight harness
 
 One long-lived interactive harness, reused across every item, so its startup cost
@@ -99,6 +110,7 @@ primary` or `provider: fallback` in the YAML store) — never left implicit.
 
 | Setting | Environment variable | Default |
 |---------|----------------------|---------|
+| Data directory (store and document) | `GSB_DATA_DIR` | `~/.local/share/github-slashboard` |
 | Provider selection | `GSB_PROVIDER` | `kiro` |
 | Provider model | `GSB_PROVIDER_MODEL` | `claude-haiku-5.5` |
 | Provider timeout (per call) | `GSB_PROVIDER_TIMEOUT` | `90s` |

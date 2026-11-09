@@ -40,7 +40,7 @@ nothing there for a model to read.
   issue's close reason, and a failing build on your own PR are hard facts a model
   can't override or forget to mention.
 - **Pluggable model provider**: uses a cheap local model via CLI (Kiro CLI for the
-  MVP); Grok-, Claude-, and Ollama-style providers drop in without code changes.
+  MVP); `claude` (headless Claude Code) and `ollama` are built in as one-shot providers.
 - **Priority flagging**: highlights items where the history signals urgency.
 - **Honest about failure**: if a run aborts before it can refresh the dashboard,
   the document is topped with a staleness banner saying so — a failed run can
@@ -71,6 +71,21 @@ export GITHUB_TOKEN=...        # read-only token
 Schedule it (launchd on macOS, cron on Linux) to refresh the status document
 unattended.
 
+## Logs
+
+The tool writes no log file of its own: it logs to **stderr**, as structured
+`key=value` lines (Info by default, Debug with `-verbose`). Where that ends up
+depends on how you run it:
+
+| How you run it | Where the log is |
+|----------------|------------------|
+| Interactively | Your terminal. |
+| Linux cron | Wherever your crontab line redirects it. The [example crontab](examples/scheduling/crontab.example) appends to `~/.local/state/githubslashboard.log`; without a redirect, cron mails it. |
+| macOS launchd | The plist's `StandardErrorPath`. The [example plist](examples/scheduling/com.example.githubslashboard.plist) uses `~/Library/Logs/githubslashboard.err.log`. |
+
+A run that fails also writes a "generation aborted" banner at the top of the
+status document, with the reason.
+
 ## Configuration
 
 Paths and behavior are set by environment variables, with command-line flags
@@ -85,6 +100,7 @@ below at any location you prefer.
 
 | Setting | Environment variable | Flag | Default |
 |---------|----------------------|------|---------|
+| Data directory (holds both artifacts) | `GSB_DATA_DIR` | — | `$XDG_DATA_HOME/github-slashboard` (`~/.local/share/github-slashboard`) |
 | Rendered Markdown path | `GSB_OUTPUT_PATH` | `-output` | `<data dir>/GSB-SlashBoard.md` |
 | YAML store path | `GSB_STORE_PATH` | `-store` | `<data dir>/prs.pr.yaml` |
 | Read-only GitHub token | `GITHUB_TOKEN` | — | _(required)_ |

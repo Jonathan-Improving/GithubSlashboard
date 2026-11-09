@@ -93,3 +93,22 @@ func TestNewCommandProviderRejectsEmptyArgv(t *testing.T) {
 		t.Error("empty argv should be rejected")
 	}
 }
+
+func TestClaudeOneShotArgvIsToollessAndModelParameterized(t *testing.T) {
+	p, err := newOneShotProvider("claude", "haiku")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(p.argv, " ")
+	for _, want := range []string{"claude -p", "--model haiku", "--strict-mcp-config", "--no-session-persistence"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q missing %q", joined, want)
+		}
+	}
+	if k, _ := KindForName("claude"); k != KindOneShot {
+		t.Errorf("claude kind = %q, want oneshot", k)
+	}
+	if _, err := newOneShotProvider("claude", ""); err == nil {
+		t.Error("expected error for claude without model")
+	}
+}

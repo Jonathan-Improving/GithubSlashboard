@@ -280,3 +280,20 @@ func TestProviderTimeoutDefaultAndOverride(t *testing.T) {
 		t.Error("an unparseable provider timeout should fail Load")
 	}
 }
+
+func TestLoadDataDirRelocatesArtifactsButPathOverridesWin(t *testing.T) {
+	c, err := Load(fakeEnv(map[string]string{
+		EnvGitHubToken: "tok",
+		EnvDataDir:     "/data/ghsb",
+		EnvOutputPath:  "/elsewhere/o.md",
+	}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.StorePath != "/data/ghsb/"+StoreFileName {
+		t.Errorf("store path = %q", c.StorePath)
+	}
+	if c.OutputPath != "/elsewhere/o.md" {
+		t.Errorf("output path = %q, want explicit override", c.OutputPath)
+	}
+}

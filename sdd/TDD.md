@@ -9,11 +9,11 @@ change in front of you.
 | # | Functional area | Rubrics |
 |---|-----------------|---------|
 | 1 | GitHub data acquisition | 1.1 – 1.6 |
-| 2 | YAML store (source of truth) | 2.1 – 2.5 |
+| 2 | YAML store (source of truth) | 2.1 – 2.6 |
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.7 |
 | 4 | Status classification | 4.1 – 4.14, 4.7a, 4.13a |
 | 5 | Stale determination | 5.1 – 5.4 |
-| 6 | Provider / LLM hand-off | 6.1 – 6.19 |
+| 6 | Provider / LLM hand-off | 6.1 – 6.20 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
 | 9 | Notification hook | 9.1 – 9.16 |
@@ -147,6 +147,17 @@ reference them by name.
 - **Then** it coexists with the recognized documents and is round-tripped verbatim
   rather than dropped, and the pipeline handles the addition without restructuring
   existing data
+
+### 2.6 The operator chooses where the store and the document live
+- **Given** an operator who names a data directory
+- **When** the tool runs
+- **Then** both the store and the rendered Markdown are kept in that directory
+- **And** an explicitly named store path or output path takes precedence over the
+  data directory for that one artifact
+- **And** with none of these named, both artifacts are kept in the platform's
+  conventional per-user application-data directory for the tool
+- **And** a directory that does not yet exist is created rather than aborting
+  the run
 
 ---
 
@@ -854,6 +865,15 @@ reference them by name.
 - **Note** the cause was cost: review-bot comments were about two thirds of all
   trail text, almost all of it markup and boilerplate with no bearing on whose
   court the ball is in, and every byte is billed on each model request of a turn
+
+### 6.20 A one-shot Claude provider is a bare text completion
+- **Given** the provider is configured as `claude`, in either slot
+- **When** an item is handed to it for judgment or summary
+- **Then** the model is reached through a fresh headless invocation per request,
+  with no tool, MCP server, skill, saved session, or operator or project
+  setting available to it
+- **And** the model is the one the slot names, and a slot that names none is
+  refused rather than silently given a costlier default
 
 ---
 

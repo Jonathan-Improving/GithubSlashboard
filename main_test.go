@@ -201,3 +201,34 @@ func TestFireNotifyHookLogsDecisionAtInfo(t *testing.T) {
 		}
 	})
 }
+
+// A store directory that does not yet exist is created by the pipeline rather
+// than aborting the run (TDD 2.6). The context is already cancelled so the run
+// stops at acquisition without touching the network; what matters is that the
+// directory exists afterwards and the failure is not about creating it.
+func TestPipelineCreatesMissingStoreDirectory(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "gsb-storedir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+
+	cfg := config.Default()
+	cfg.GitHubToken = "unused"
+	dataDir := filepath.Join(root, "nested", "data")
+	cfg.StorePath = filepath.Join(dataDir, config.StoreFileName)
+	// Output lives elsewhere so the output preflight cannot create the store
+	// directory as a side effect.
+	cfg.OutputPath = filepath.Join(root, "out", config.OutputFileName)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runErr := pipeline(ctx, cfg, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+
+	if info, statErr := os.Stat(dataDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("store directory not created (stat err %v, run err %v)", statErr, runErr)
+	}
+	if runErr != nil && strings.Contains(runErr.Error(), "create store directory") {
+		t.Errorf("run failed creating the directory: %v", runErr)
+	}
+}

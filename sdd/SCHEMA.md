@@ -366,7 +366,7 @@ verdict tool for a session provider (TECH.md § Provider).
 A provider is built from a name and a model (`provider.Options{Name, Model,
 ...}`) — there is no independently-configured invocation kind and no raw
 command line (TDD 6.11): `provider.KindForName` is the single closed mapping
-from name to kind, currently `kiro` → session, `ollama` → oneshot, and it is
+from name to kind, currently `kiro` → session, `claude` and `ollama` → oneshot, and it is
 the only place in the codebase that pairs a name with a kind. Passing an
 unrecognized name is a construction error; there is no way to request a name
 with the "wrong" kind, since kind is never a parameter.

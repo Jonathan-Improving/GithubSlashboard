@@ -83,7 +83,9 @@ Run these in order after every change; a change is not complete until all pass:
   provider spawns a fresh subprocess per request and delivers the prompt on stdin
   (Ollama-style, and any cheap-to-start backend); a **session** provider keeps one
   long-lived interactive harness and reuses it across all PRs, amortizing the
-  harness's heavy startup cost (Kiro, Claude, Grok). Which strategy a provider
+  harness's heavy startup cost (Kiro). The `claude` provider is one-shot: a
+  headless `claude -p` call with every tool, MCP server, skill and saved session
+  disabled, since its startup cost is small. Which strategy a provider
   uses is fixed by its name in one closed, code-owned mapping — never an
   independently configured value, so a name can never be paired with the wrong
   strategy. There is no raw-command override for either strategy: the argv shape

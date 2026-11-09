@@ -52,6 +52,22 @@ func ollamaArgv(model string) []string {
 	return []string{"ollama", "run", model}
 }
 
+// claudeArgv is the one-shot Claude Code invocation: headless print mode, prompt
+// on stdin, reply on stdout. Every built-in tool is disabled (--tools ""), no
+// MCP server, skill, user/project setting or saved session is loaded, so the
+// call is a bare, read-only text completion parameterized only by model.
+func claudeArgv(model string) []string {
+	return []string{
+		"claude", "-p",
+		"--model", model,
+		"--tools", "",
+		"--strict-mcp-config",
+		"--disable-slash-commands",
+		"--no-session-persistence",
+		"--setting-sources", "",
+	}
+}
+
 // newOneShotProvider builds a CommandProvider for a one-shot-kind name (TDD
 // 6.11), using that name's fixed, blackboxed argv shape parameterized only by
 // model. name must already be known-oneshot (checked by the caller via
@@ -64,6 +80,11 @@ func newOneShotProvider(name, model string) (*CommandProvider, error) {
 			model = defaultKiroModel
 		}
 		return NewCommandProvider(name, kiroOneShotArgv(model))
+	case "claude":
+		if model == "" {
+			return nil, fmt.Errorf("provider %q requires a model", name)
+		}
+		return NewCommandProvider(name, claudeArgv(model))
 	case "ollama":
 		if model == "" {
 			return nil, fmt.Errorf("provider %q requires a model", name)

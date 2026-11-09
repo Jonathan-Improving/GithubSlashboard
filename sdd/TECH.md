@@ -70,8 +70,8 @@ being judged: the response's vocabulary is not fixed by the transport but suppli
 per request, so one provider path, parser, and retry loop serve both pull requests
 and issues while each entity's enum stays a tight closed set. Two invocation
 strategies sit behind the provider interface. A **one-shot** provider delivers the
-prompt on a fresh subprocess's stdin and reads its stdout (Ollama-style, and any
-cheap-to-start backend). A **session** provider launches one heavy harness (Kiro,
+prompt on a fresh subprocess's stdin and reads its stdout (Ollama- and Claude-style,
+and any cheap-to-start backend). A **session** provider launches one heavy harness (Kiro,
 Claude, Grok) as a long-lived interactive process under tmux and reuses it for
 every PR, amortizing the harness's large startup cost. Which strategy a provider
 uses is fixed by its name — a closed, code-owned mapping, not an independent
@@ -99,7 +99,12 @@ exhausted (TDD 6.11–6.17). It is bounded by its own independently configured
 timeout rather than the primary's, since a one-shot fallback backed by a local
 model can legitimately need longer per call than a session-based primary. Which
 provider slot produced an item's current judgment is recorded on the persisted
-record, never left implicit. For
+record, never left implicit. There is
+exactly one fallback slot — one provider and one model — shared by classification,
+summarization and the Prose Diff Checker, rather than a fallback per step: the
+fallback is typically a local model, and a machine can keep only one such model
+resident in GPU memory efficiently, so per-step fallback models would thrash it
+by loading and unloading models between calls. For
 the request/response and verdict-tool field reference, see SCHEMA.md.
 
 **YAML store.** The persistence layer is the only reader and writer of the source
