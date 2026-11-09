@@ -58,7 +58,7 @@ type Options struct {
 	// is derived from this name alone (KindForName) — never independently
 	// configured, so a name can never be paired with the wrong kind (TDD 6.11).
 	Name string
-	// Model selects the model within Name's fixed kind (e.g. "glm-5" for kiro,
+	// Model selects the model within Name's fixed kind (e.g. "claude-haiku-5.5" for kiro,
 	// "glm-4.7-flash" for ollama). Both the primary and fallback slot use this
 	// same field — the two slots are symmetric, differing only in when each is
 	// invoked (TDD 6.12).
@@ -232,10 +232,10 @@ const (
 	kiroIdleMarker   = "ask a question or describe a task"
 	kiroBusyMarker   = "Kiro is working"
 
-	// defaultKiroModel is used when Options.Model is empty, preserving today's
-	// behavior for a deployment that does not set GSB_PROVIDER_MODEL /
-	// GSB_FALLBACK_PROVIDER_MODEL.
-	defaultKiroModel = "glm-5"
+	// defaultKiroModel is used when Options.Model is empty. It matches
+	// config.DefaultProviderModel: a low-cost model, so an unconfigured
+	// deployment cannot consume a costlier one.
+	defaultKiroModel = "claude-haiku-5.5"
 )
 
 // kiroSessionArgv is the MVP Kiro CLI interactive launch for a reused session.

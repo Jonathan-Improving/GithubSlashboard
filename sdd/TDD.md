@@ -13,7 +13,7 @@ change in front of you.
 | 3 | Markdown rendering (pure sink) | 3.1 – 3.7 |
 | 4 | Status classification | 4.1 – 4.14, 4.7a, 4.13a |
 | 5 | Stale determination | 5.1 – 5.4 |
-| 6 | Provider / LLM hand-off | 6.1 – 6.18 |
+| 6 | Provider / LLM hand-off | 6.1 – 6.19 |
 | 7 | Execution & portability | 7.1 – 7.2 |
 | 8 | Issue tracking | 8.1 – 8.9 |
 | 9 | Notification hook | 9.1 – 9.16 |
@@ -833,6 +833,27 @@ reference them by name.
   make every large-trail item fail with "file not found" — indistinguishable
   from a model classification error until the harness's own transcript was
   read directly
+
+### 6.19 An item's event trail is compacted before it is sent to the model
+- **Given** a pull request's or an issue's event trail whose comment and review
+  text carries HTML markup, decoration, or review-bot boilerplate
+- **When** the trail is handed to the provider for judgment
+- **Then** each comment and review body is sent as Markdown: HTML converted,
+  HTML comments, images and other decoration removed, table divider rows and
+  blank-line runs collapsed
+- **And** for an author whose login ends in `[bot]`, collapsible boilerplate
+  sections (restated walkthroughs, settings echoes, copy-paste prompts for other
+  agents, share widgets) are reduced to their title line, the bot's link targets
+  are dropped, and its announcement and tip regions are removed; a person's
+  collapsible sections and link targets are left as written
+- **And** no text is truncated to a length, and every other event kind is sent
+  unchanged
+- **And** the item's own stored trail, and therefore the unchanged-input
+  fingerprint (TDD 4.13, 8.8), are not modified by compaction
+- **And** a body that cannot be converted is sent as received
+- **Note** the cause was cost: review-bot comments were about two thirds of all
+  trail text, almost all of it markup and boilerplate with no bearing on whose
+  court the ball is in, and every byte is billed on each model request of a turn
 
 ---
 

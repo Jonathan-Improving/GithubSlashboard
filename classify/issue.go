@@ -315,7 +315,7 @@ func (c *Classifier) judgeIssue(ctx context.Context, iss model.Issue) provider.R
 		Role:        string(iss.Role),
 		Operator:    c.operator,
 		State:       state,
-		Events:      iss.Events,
+		Events:      provider.CompactEvents(iss.Events),
 		Constraints: provider.IssueConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),
 	}
 	return provider.Judge(ctx, c.prov, c.fallback, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout, c.cfg.FallbackProviderTimeout, c.log)

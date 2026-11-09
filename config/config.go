@@ -56,9 +56,10 @@ const (
 	DefaultProvider = "kiro"
 
 	// DefaultProviderModel is used when neither GSB_PROVIDER_MODEL nor
-	// GSB_FALLBACK_PROVIDER_MODEL is set, preserving today's pinned model for a
-	// deployment that does not configure one explicitly (TDD 6.12).
-	DefaultProviderModel = "glm-5"
+	// GSB_FALLBACK_PROVIDER_MODEL is set (TDD 6.12). It is a low-cost model on
+	// purpose: a deployment that falls back to the default must not run a
+	// costlier model than it chose.
+	DefaultProviderModel = "claude-haiku-5.5"
 
 	// DefaultProviderReadyTimeout bounds how long a session provider waits for
 	// the harness to become interactive after launch before giving up.

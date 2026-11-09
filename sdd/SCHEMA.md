@@ -436,7 +436,7 @@ loudly rather than silently accepting any value.
 | `author` | `string` | yes | Actor login. |
 | `role_hint` | `string` | no | Indication of whether the author is a stakeholder. |
 | `kind` | `string` | yes | Event type: comment, review (with decision), state transition, label, ci_status (a head-commit CI/check-run summary, open PRs only), review_threads (a summary of unresolved review threads, open PRs only), review_decision (GitHub's overall review verdict, open PRs only). |
-| `text` | `string` | no | Body/summary for comment and review events. |
+| `text` | `string` | no | Body/summary for comment and review events. Sent to the provider as compacted Markdown, not as GitHub returned it: HTML converted, decoration removed, and for a `[bot]` author its boilerplate collapsible sections reduced to their titles (TDD 6.19). Never truncated to a length. The stored trail and the unchanged-input fingerprint use the text as fetched. |
 
 ### Response (from provider)
 

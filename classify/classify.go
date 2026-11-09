@@ -642,7 +642,7 @@ func (c *Classifier) judge(ctx context.Context, pr model.PR, state model.GitHubS
 		Role:        string(pr.Role),
 		Operator:    c.operator,
 		State:       string(state),
-		Events:      pr.Events,
+		Events:      provider.CompactEvents(pr.Events),
 		Constraints: provider.ConstraintsFrom(c.cfg.CompanionWordsMin, c.cfg.CompanionWordsMax),
 	}
 	return provider.Judge(ctx, c.prov, c.fallback, req, c.cfg.LLMRetryCap, c.cfg.ProviderTimeout, c.cfg.FallbackProviderTimeout, c.log)

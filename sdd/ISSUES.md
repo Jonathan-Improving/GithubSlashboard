@@ -7,6 +7,7 @@
 | D | An inferred note can outlive the fact it asserts | Medium |
 | E | The unchanged-input fingerprint cannot see a same-count thread swap | Low |
 | F | A newly pinned PR produces no notification on its first appearance | Low |
+| G | There is no cap on the length of event text sent to the model | Medium |
 
 ## B. Acquisition is broad and bounded by GitHub's search rate limit
 
@@ -179,3 +180,31 @@ appearing in the rendered document (with its 📌 marker), not by a toast.
 - Accept it: the rendered document is the record of what is tracked, and the
   pin/unpin command already reports success at the CLI, so the operator has
   immediate confirmation the pin took without needing a toast.
+
+## G. There is no cap on the length of event text sent to the model
+
+**Severity**: Medium (a cost and quota risk, not a correctness risk)
+
+Each comment and review body in an item's event trail is sent to the model in
+full. The trail is compacted first (HTML converted to Markdown, review-bot
+boilerplate and decoration removed, TDD 6.19), which shrinks a typical bot-heavy
+trail by roughly two thirds, but a single event is still never cut to a length.
+A person's long review, a pasted log or a very large bot finding is passed
+through whole, so one unusually large event can make that item's judgment cost
+many times the average, and a PR with many such events can approach the model's
+context window. The session harness bills every model request in a turn for the
+whole trail again, so the trail's size is counted roughly twice per judgment.
+
+Measured on the captured trails when compaction was added: a person's review
+reached about 14,000 characters after compaction, and the mean compacted trail
+was roughly 20,000 characters. Nothing bounds either figure.
+
+**Mitigation options**:
+- Cap each event's text, with a smaller limit for bot authors than for people, and
+  mark the cut so the model knows the text is partial. Cheapest and most
+  predictable; risks cutting a decisive line near the end of a long human comment.
+- Cap the whole trail by dropping or shortening the oldest events first, since the
+  latest authoritative event governs (TDD 4.4). Keeps recent detail intact; loses
+  history the model may need to tell whose court the ball is in.
+- Accept it: after compaction the average cost is low, and a cap that cuts real
+  review text is a correctness risk the operator may prefer to avoid.

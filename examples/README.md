@@ -47,7 +47,7 @@ with exactly that cost profile.
 
 ```bash
 export GSB_PROVIDER=kiro          # the default
-export GSB_PROVIDER_MODEL=glm-5   # the default
+export GSB_PROVIDER_MODEL=claude-haiku-5.5   # the default
 ```
 
 A session-strategy provider is more involved than a one-shot, and worth
@@ -100,7 +100,7 @@ primary` or `provider: fallback` in the YAML store) — never left implicit.
 | Setting | Environment variable | Default |
 |---------|----------------------|---------|
 | Provider selection | `GSB_PROVIDER` | `kiro` |
-| Provider model | `GSB_PROVIDER_MODEL` | `glm-5` |
+| Provider model | `GSB_PROVIDER_MODEL` | `claude-haiku-5.5` |
 | Fallback provider selection | `GSB_FALLBACK_PROVIDER` | _(unset — no fallback)_ |
 | Fallback provider model | `GSB_FALLBACK_PROVIDER_MODEL` | provider's own default |
 | Fallback provider timeout | `GSB_FALLBACK_PROVIDER_TIMEOUT` | `270s` |
