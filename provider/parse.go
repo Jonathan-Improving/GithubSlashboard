@@ -27,16 +27,76 @@ func ParseResponse(raw string, c Constraints) (Response, error) {
 	}
 
 	var resp Response
-	dec := json.NewDecoder(strings.NewReader(jsonText))
+	dec := json.NewDecoder(strings.NewReader(escapeStringControls(jsonText)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&resp); err != nil {
 		return Response{}, fmt.Errorf("response is not valid JSON: %w", err)
 	}
 
+	resp.Emoji = resolveShortcode(resp.Emoji)
+
 	if err := validate(resp, c); err != nil {
 		return Response{}, err
 	}
 	return resp, nil
+}
+
+// emojiShortcodes maps the chat-style ":name:" shortcodes models substitute for
+// a glyph to the glyph itself. Only a recognised shortcode is repaired; an
+// unknown one still fails validation and drives the usual retry.
+var emojiShortcodes = map[string]string{
+	"white_check_mark": "✅", "heavy_check_mark": "✔️", "x": "❌",
+	"warning": "⚠️", "hourglass": "⌛", "hourglass_flowing_sand": "⏳",
+	"eyes": "👀", "construction": "🚧", "rocket": "🚀", "tada": "🎉",
+	"sparkles": "✨", "fire": "🔥", "bug": "🐛", "lock": "🔒",
+	"wrench": "🔧", "memo": "📝", "speech_balloon": "💬", "question": "❓",
+	"no_entry": "⛔", "stop_sign": "🛑", "red_circle": "🔴",
+	"large_green_circle": "🟢", "green_circle": "🟢", "yellow_circle": "🟡",
+	"thumbsup": "👍", "+1": "👍", "pray": "🙏", "bell": "🔔",
+	"hammer_and_wrench": "🛠️", "mag": "🔍", "link": "🔗", "package": "📦",
+	"arrows_counterclockwise": "🔄", "repeat": "🔁", "zzz": "💤",
+	"point_right": "👉", "raised_hand": "✋", "clock3": "🕒", "alarm_clock": "⏰",
+	"calendar": "📆", "handshake": "🤝", "thinking": "🤔", "thinking_face": "🤔",
+	"merge": "🔀", "twisted_rightwards_arrows": "🔀", "lady_beetle": "🐞",
+}
+
+// resolveShortcode returns the glyph for a ":name:" shortcode, or s unchanged.
+func resolveShortcode(s string) string {
+	t := strings.TrimSpace(s)
+	if len(t) > 2 && t[0] == ':' && t[len(t)-1] == ':' {
+		if g, ok := emojiShortcodes[strings.ToLower(t[1:len(t)-1])]; ok {
+			return g
+		}
+	}
+	return s
+}
+
+// escapeStringControls rewrites a raw control character (a literal newline or
+// tab) found inside a JSON string literal into its escaped form. Chat models
+// routinely wrap a long companion across lines, which strict JSON rejects
+// ("invalid character '\\n' in string literal") even though the intent is
+// unambiguous; a document that is otherwise valid is therefore repaired rather
+// than burned on a retry. Whitespace outside string literals is untouched.
+func escapeStringControls(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case inStr && c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr && c < 0x20:
+			fmt.Fprintf(&b, "\\u%04x", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // extractJSON pulls the JSON object body out of raw provider output. It

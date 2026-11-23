@@ -647,6 +647,10 @@ reference them by name.
 - **When** consumed
 - **Then** its status, close-reason, and priority values are validated against their
   finite enums before use
+- **And** a recoverable formatting slip does not fail the response: a raw newline
+  or tab inside a JSON string is escaped, and a recognised `:name:` emoji
+  shortcode is replaced by its glyph, before validation; an unrecognised
+  shortcode still fails and drives the retry (TDD 6.4)
 
 ### 6.7 A session provider reuses one harness across PRs
 - **Given** a provider configured as a session (a heavy CLI harness such as the

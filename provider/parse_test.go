@@ -167,3 +167,31 @@ func TestParseResponseWithoutThinkingMarkerUnaffected(t *testing.T) {
 		t.Errorf("parsed wrong: %+v", resp)
 	}
 }
+
+// A model that wraps its companion across lines emits a raw newline inside the
+// JSON string; that is repaired rather than rejected as invalid JSON.
+func TestParseResponseRawNewlineInString(t *testing.T) {
+	raw := "```json\n{\"bucket\":\"open\",\"action\":\"blocked_external\",\"priority\":\"neutral\",\"companion\":\"waiting on John\nreview now\",\"emoji\":\"⏳\"}\n```"
+	resp, err := ParseResponse(raw, ConstraintsFrom(3, 8))
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	if resp.Companion != "waiting on John\nreview now" {
+		t.Errorf("companion = %q", resp.Companion)
+	}
+}
+
+// A recognised ":name:" shortcode is repaired to its glyph; an unknown one
+// still fails validation.
+func TestParseResponseEmojiShortcode(t *testing.T) {
+	mk := func(e string) string {
+		return "```json\n{\"bucket\":\"open\",\"action\":\"blocked_external\",\"priority\":\"neutral\",\"companion\":\"waiting on John review\",\"emoji\":\"" + e + "\"}\n```"
+	}
+	resp, err := ParseResponse(mk(":white_check_mark:"), ConstraintsFrom(3, 8))
+	if err != nil || resp.Emoji != "✅" {
+		t.Fatalf("shortcode: emoji=%q err=%v", resp.Emoji, err)
+	}
+	if _, err := ParseResponse(mk(":no_such_thing:"), ConstraintsFrom(3, 8)); err == nil {
+		t.Error("unknown shortcode should still be rejected")
+	}
+}
