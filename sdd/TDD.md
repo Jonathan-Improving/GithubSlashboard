@@ -179,7 +179,7 @@ reference them by name.
     `💡 Open — Awaiting Review` (the ball is with reviewers) — followed by the
     three single-bucket tables `☠ Stale` (… | Reason), `📦 Merged` (… | Created |
     Merged | Notes), and `⛔ Closed` (… | Created | Closed | Reason). An open
-    authored PR is placed in "Awaiting Our Action" per 4.12; Stale is never
+    authored PR is placed in "Awaiting Our Action" per 4.12a; Stale is never
     split, since a stale PR is one gone cold that the author cannot move
   - a **Reviewer section** (`# Reviewer: PRs I Reviewed`), preceded by a
     horizontal rule separating it from the Submitter section, split by
@@ -399,7 +399,7 @@ reference them by name.
   conflates several causes GitHub does not detail (ISSUES § C), and one of
   those causes — a required review GitHub is still waiting on from a reviewer
   it already asked — is not the author's to clear. So the submitter render
-  split (TDD 3.1/4.12) sends a merge-blocked PR to "Awaiting Our Action" only
+  split (TDD 3.1/4.12a) sends a merge-blocked PR to "Awaiting Our Action" only
   when GitHub reports no reviewer still pending (`PendingReviewers` false,
   read off the same single-PR call as `MergeableState`, at no extra cost); with
   a reviewer still pending it renders under "Open — Awaiting Review" instead,
@@ -407,18 +407,10 @@ reference them by name.
   (⏳ pending-not-us rather than 🔄 back-and-forth) — the "blocked from
   merging" note text itself is unchanged either way, since it remains a true
   fact regardless of whose move it is
-- **And** a standing changes-requested verdict from any reviewer counts as
-  feedback pending exactly as unresolved threads do (TDD 4.9): GitHub's overall
-  decision is `CHANGES_REQUESTED`, or any non-author reviewer's latest approving,
-  changing or dismissing review is a changes-request (a later plain comment does
-  not lift it, and the decision alone is not enough because repositories that do
-  not require reviews never report it). The verdict holds until that reviewer
-  re-reviews or is dismissed, even when every thread is resolved; a false
-  positive costs the operator one look at the PR, whereas a miss leaves it
-  ignored by both sides
-- **And** unresolved review threads (TDD 4.9) outrank it: a blocked PR that also
-  has unresolved, non-outdated threads keeps Review Feedback, because the
-  author owes those threads an answer whether or not a reviewer is also pending
+- **And** the author's outstanding feedback (TDD 4.9) outranks it: a blocked PR
+  that also has unresolved, non-outdated threads or a standing changes-requested
+  verdict keeps its feedback action, because the author owes an answer whether
+  or not a reviewer is also pending
 - **Note** because the block is a hard fact rather than a judgment, it surfaces
   even on a row that fell to `unverified`; a model-inferred `merge_ready` sitting
   on a row GitHub itself reports as blocked was the concrete defect motivating
@@ -473,6 +465,16 @@ reference them by name.
   because a reviewer's approval can coexist with still-open comments, which the
   model reports as "conditionally approved" and which would otherwise give the
   false impression that the ball is in someone else's court
+- **And** a standing changes-requested verdict from any reviewer other than the
+  author puts the ball with the author as Changes Requested — GitHub's overall
+  decision is changes-requested, or that reviewer's latest approving, changing
+  or dismissing review is a changes-request (a later plain comment does not lift
+  it, and the decision alone is not enough because repositories that do not
+  require reviews never report it) — even when every thread is resolved, since
+  the verdict holds until the reviewer re-reviews or is dismissed; unresolved
+  threads, when present, take precedence as Review Feedback, and the rendered
+  note never claims unresolved feedback the PR does not have. A false positive
+  costs one look at the PR; a miss leaves it ignored by both sides
 - **Note** the model's inferred note and emoji are preserved — only the action is
   overridden, so any nuance the model found still reaches the reader; the override
   is submitter-scoped (unresolved comments on a PR the operator merely reviews are
@@ -522,18 +524,20 @@ reference them by name.
 - **And** the row is placed in the submitter `Awaiting Our Action` table whatever
   its Action Needed value, since the author owes the fix; the flag alone is enough
   to put the ball with them
-- **Note** the submitter live Open bucket is split by who owes the next move,
-  mirroring the reviewer section. An open authored PR is awaiting the operator's
-  action when the author owes the move — changes requested, mid-iteration, a
-  conflicting branch, a blocked merge, unresolved review feedback, approved and
-  ready for them to merge, or no reviewer assigned — or, independently, whenever
-  the build is red; otherwise (awaiting review, or blocked on something external
-  the author cannot move) the ball is with reviewers and it renders under
-  `💡 Open — Awaiting Review`. Unlike the reviewer split, which rests on a live
-  GitHub review-request fact, several of these dispositions are model-inferred for
-  an authored PR, while the CI flag and the conflict/block/feedback dispositions
-  are hard GitHub facts. The flag is submitter-scoped, so it never affects the
-  reviewer section's ball-holding split
+
+### 4.12a An authored PR is placed by who owes the next move
+- **Given** an open PR the operator authored
+- **When** the document is rendered
+- **Then** it appears under `Awaiting Our Action` when the author owes the
+  next move — changes requested, mid-iteration, a conflicting branch, a blocked
+  merge with no reviewer still pending, unresolved review feedback, or no
+  reviewer assigned — or, independently, whenever its build is red (TDD 4.12)
+- **And** otherwise — awaiting review, approved and ready to merge (a
+  maintainer merges, so nothing is left for the author), or blocked on
+  something external the author cannot move — it appears under
+  `💡 Open — Awaiting Review`
+- **And** the conflict, block, feedback and changes-requested dispositions are
+  hard GitHub facts, whereas the remaining dispositions are model-inferred
 
 ### 4.13 An unchanged open PR skips the provider call
 - **Given** an open PR whose deterministic inputs — its most recent trail event,

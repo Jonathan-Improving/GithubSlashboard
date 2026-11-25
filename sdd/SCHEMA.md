@@ -27,11 +27,11 @@ The finite set of actions a live PR may be waiting on.
 | Value | Meaning |
 |-------|---------|
 | `awaiting_review` | Waiting on a reviewer to act. |
-| `changes_requested` | Author must address review feedback. |
+| `changes_requested` | Author must address review feedback. Also assigned deterministically while any non-author reviewer's latest verdict is changes-requested and no thread is unresolved. |
 | `author_active` | Author is actively iterating. |
 | `unassigned` | No reviewer assigned yet. |
 | `blocked_external` | Waiting on something outside this PR (another PR, a decision). |
-| `merge_ready` | Approved and mergeable; awaiting merge. |
+| `merge_ready` | Approved and mergeable; awaiting a maintainer to merge (not the author's move). |
 | `conflicted` | The PR conflicts with its base branch and the author must resolve it. |
 | `merge_blocked` | GitHub reports the PR as blocked from merging by an unmet branch-protection requirement (a required review, check, or signature) — distinct from a conflict. |
 | `review_feedback` | Reviewers left line comments the author has not yet resolved. |
@@ -76,7 +76,7 @@ independent: expressing a red build here would force it to displace whatever
 review-derived disposition the PR also carries, so an unaddressable build failure
 could conceal a reviewer's request the operator *could* act on. It is therefore
 carried as the separate `ci_failing` flag on the `!pr` document, and both facts
-render side by side (TDD 4.10–4.12).
+render side by side (TDD 4.10–4.12a).
 
 `awaiting_review` may likewise be assigned **deterministically** — not only
 inferred: for a `role: reviewer` PR that GitHub currently shows a pending review

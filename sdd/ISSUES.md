@@ -8,6 +8,8 @@
 | E | The unchanged-input fingerprint cannot see a same-count thread swap | Low |
 | F | A newly pinned PR produces no notification on its first appearance | Low |
 | G | There is no cap on the length of event text sent to the model | Medium |
+| H | A single GitHub 5xx or DNS failure aborts the whole run | Medium |
+| I | A terminal PR stored unverified is never re-judged | Low |
 
 ## B. Acquisition is broad and bounded by GitHub's search rate limit
 
@@ -208,3 +210,32 @@ was roughly 20,000 characters. Nothing bounds either figure.
   history the model may need to tell whose court the ball is in.
 - Accept it: after compaction the average cost is low, and a cap that cuts real
   review text is a correctness risk the operator may prefer to avoid.
+
+## H. A single GitHub 5xx or DNS failure aborts the whole run
+
+**Severity**: Medium (the dashboard goes stale until the next scheduled run; seen
+live as four aborted runs from one DNS outage and three 502/503 responses)
+
+Acquisition returns on the first error from any per-PR fetch, so one transient
+GitHub failure discards a run that had already crawled most of the tracked set.
+Nothing is lost permanently — the next run retries — but a flapping GitHub can
+leave the dashboard stale for hours.
+
+**Mitigation options**:
+- Retry a failed GitHub call a bounded number of times with backoff before
+  failing the run.
+- Skip the failing PR, carry its prior record forward, and log it, so one bad
+  fetch costs one row's freshness instead of the whole run.
+
+## I. A terminal PR stored unverified is never re-judged
+
+**Severity**: Low (latent; no such record exists today)
+
+A merged or closed PR already in the store is carried forward without a crawl
+(TDD 1.5). If its judgment ever failed and it was stored unverified, the carry
+keeps that row's missing note forever; only a deliberate deep run re-judges it.
+
+**Mitigation options**:
+- Exclude unverified terminal records from the carry-forward so the next ordinary
+  run re-crawls and re-judges them.
+- Accept it: terminal PRs are settled facts and the deep run is the repair path.

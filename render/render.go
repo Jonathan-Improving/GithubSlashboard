@@ -470,9 +470,9 @@ func ballWithSubmitter(p model.PR) bool {
 	case model.ActionMergeBlocked:
 		return !p.PendingReviewers
 	case model.ActionChangesRequested, model.ActionAuthorActive, model.ActionConflicted,
-		model.ActionReviewFeedback, model.ActionMergeReady, model.ActionUnassigned:
+		model.ActionReviewFeedback, model.ActionUnassigned:
 		return true
-	default: // awaiting_review, blocked_external
+	default: // awaiting_review, blocked_external, merge_ready (a maintainer merges, not the author)
 		return false
 	}
 }
@@ -483,7 +483,7 @@ func ballWithSubmitter(p model.PR) bool {
 func actionNeededCell(p model.PR) string {
 	marker := markPending
 	switch p.Action {
-	case model.ActionAuthorActive, model.ActionChangesRequested, model.ActionMergeReady,
+	case model.ActionAuthorActive, model.ActionChangesRequested,
 		model.ActionConflicted, model.ActionReviewFeedback:
 		marker = markBackForth
 	case model.ActionMergeBlocked:

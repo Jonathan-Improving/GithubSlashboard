@@ -997,12 +997,29 @@ func TestChangesRequestedDecisionIsFeedbackPending(t *testing.T) {
 		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked",
 		ChangesRequested: true, PendingReviewers: true}
 	got := c.classifyOne(context.Background(), pr)
-	if got.Action != model.ActionReviewFeedback {
-		t.Errorf("action = %q, want review_feedback", got.Action)
+	if got.Action != model.ActionChangesRequested {
+		t.Errorf("action = %q, want changes_requested (no unresolved threads, so not review_feedback)", got.Action)
 	}
 	before := fingerprint(pr)
 	pr.ChangesRequested = false
 	if fingerprint(pr) == before {
 		t.Error("fingerprint must change when ChangesRequested flips")
+	}
+}
+
+// A cached action is re-derived when the deterministic feedback rule applies,
+// since a rule change alters no fingerprint input (TDD 4.7a).
+func TestCarriedActionRederivesFeedbackDisposition(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"x y z","emoji":"⏳"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 26, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, ChangesRequested: true}
+	old := pr
+	old.Bucket, old.Action, old.Companion, old.Emoji = model.BucketOpen, model.ActionReviewFeedback, "waiting", "⏳"
+	old.InputFingerprint = fingerprint(pr)
+	c.prior = map[string]model.PR{pr.Key(): old}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action != model.ActionChangesRequested {
+		t.Errorf("action = %q, want changes_requested", got.Action)
 	}
 }

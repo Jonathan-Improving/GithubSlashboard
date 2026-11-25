@@ -108,7 +108,7 @@ func TestSubmitterOpenBallHoldingSplit(t *testing.T) {
 	awaitingReview := md[reviewStart:staleStart]
 
 	for _, title := range []string{"changes-requested", "author-active", "conflicted",
-		"merge-blocked", "review-feedback", "merge-ready", "unassigned", "ci-red-but-awaiting"} {
+		"merge-blocked", "review-feedback", "unassigned", "ci-red-but-awaiting"} {
 		if !strings.Contains(ourAction, title) {
 			t.Errorf("%q should be in Awaiting Our Action\n%s", title, ourAction)
 		}
@@ -116,7 +116,7 @@ func TestSubmitterOpenBallHoldingSplit(t *testing.T) {
 			t.Errorf("%q should not be in Open — Awaiting Review\n%s", title, awaitingReview)
 		}
 	}
-	for _, title := range []string{"awaiting-review", "blocked-external"} {
+	for _, title := range []string{"merge-ready", "awaiting-review", "blocked-external"} {
 		if !strings.Contains(awaitingReview, title) {
 			t.Errorf("%q should be in Open — Awaiting Review\n%s", title, awaitingReview)
 		}
@@ -124,12 +124,12 @@ func TestSubmitterOpenBallHoldingSplit(t *testing.T) {
 			t.Errorf("%q should not be in Awaiting Our Action\n%s", title, ourAction)
 		}
 	}
-	// The counts in the headings must match the split (8 ours, 2 awaiting review).
-	if !strings.Contains(md, "## Awaiting Our Action (8)") {
-		t.Errorf("expected 8 rows in submitter Awaiting Our Action\n%s", md)
+	// The counts in the headings must match the split (7 ours, 3 awaiting review).
+	if !strings.Contains(md, "## Awaiting Our Action (7)") {
+		t.Errorf("expected 7 rows in submitter Awaiting Our Action\n%s", md)
 	}
-	if !strings.Contains(md, "## 💡 Open — Awaiting Review (2)") {
-		t.Errorf("expected 2 rows in submitter Open — Awaiting Review\n%s", md)
+	if !strings.Contains(md, "## 💡 Open — Awaiting Review (3)") {
+		t.Errorf("expected 3 rows in submitter Open — Awaiting Review\n%s", md)
 	}
 	// The summary still counts the whole Open bucket (10), unaffected by the
 	// render-side split.
@@ -192,7 +192,7 @@ func TestActionNeededMarkers(t *testing.T) {
 	}{
 		{"changes_requested is back-and-forth", model.ActionChangesRequested, markBackForth},
 		{"author_active is back-and-forth", model.ActionAuthorActive, markBackForth},
-		{"merge_ready is back-and-forth", model.ActionMergeReady, markBackForth},
+		{"merge_ready is pending-not-us", model.ActionMergeReady, markPending},
 		{"awaiting_review is pending", model.ActionAwaitingReview, markPending},
 		{"blocked_external is pending", model.ActionBlockedExternal, markPending},
 	} {
@@ -463,10 +463,10 @@ func TestReviewSubmittedSortsByLastActivity(t *testing.T) {
 	prs := []model.PR{
 		// Number order (10 < 20) is the deliberate inverse of activity order.
 		{Repo: "r/z", Number: 10, Title: "Newest activity", URL: "u10", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: newer,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: newer,
 			Priority: model.PriorityNeutral},
 		{Repo: "r/z", Number: 20, Title: "Oldest activity", URL: "u20", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: older,
 			Priority: model.PriorityNeutral},
 	}
 	md := Render(prs, nil, nil, "x", refNow)
@@ -489,10 +489,10 @@ func TestReviewSubmittedElevatedFirstThenActivity(t *testing.T) {
 
 	prs := []model.PR{
 		{Repo: "r/z", Number: 1, Title: "Neutral newer", URL: "u1", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: newer,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: newer,
 			Priority: model.PriorityNeutral},
 		{Repo: "r/z", Number: 2, Title: "Elevated older", URL: "u2", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: older,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: older,
 			Priority: model.PriorityElevated},
 	}
 	md := Render(prs, nil, nil, "x", refNow)
@@ -513,10 +513,10 @@ func TestReviewSubmittedFallsBackToRepoNumberOnTie(t *testing.T) {
 	same := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 	prs := []model.PR{
 		{Repo: "r/z", Number: 20, Title: "Later number", URL: "u20", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: same,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: same,
 			Priority: model.PriorityNeutral},
 		{Repo: "r/z", Number: 10, Title: "Earlier number", URL: "u10", Role: model.RoleReviewer,
-			Bucket: model.BucketOpen, Action: model.ActionMergeReady, LastActivity: same,
+			Bucket: model.BucketOpen, Action: model.ActionChangesRequested, LastActivity: same,
 			Priority: model.PriorityNeutral},
 	}
 	md := Render(prs, nil, nil, "x", refNow)
@@ -725,5 +725,14 @@ func TestUnverifiedMarked(t *testing.T) {
 	md := Render(prs, nil, nil, "x", refNow)
 	if !strings.Contains(md, "unverified") {
 		t.Errorf("unverified row not marked:\n%s", md)
+	}
+}
+
+// A changes-requested row never claims unresolved feedback (TDD 4.7a).
+func TestChangesRequestedNoteDoesNotClaimUnresolvedFeedback(t *testing.T) {
+	p := model.PR{Role: model.RoleSubmitter, Bucket: model.BucketOpen, Action: model.ActionChangesRequested, Companion: "waiting on re-review"}
+	got := actionNeededCell(p)
+	if strings.Contains(got, "unresolved review feedback") {
+		t.Errorf("cell = %q", got)
 	}
 }

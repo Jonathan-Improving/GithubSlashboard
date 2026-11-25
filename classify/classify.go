@@ -259,6 +259,13 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// live request that later clears already forces a re-judge; this only
 		// catches the inference-cached case where the request was never live.
 		demoteReviewerAwaitingReview(&pr)
+		// The submitter feedback disposition is likewise a hard fact, and the
+		// rule that derives it can change without any input changing (the
+		// fingerprint cannot see that): re-derive it rather than perpetuating a
+		// cached label, except behind a cached conflict, the harder blocker.
+		if a, ok := submitterFeedbackAction(pr); ok && pr.Bucket == model.BucketOpen && pr.Action != model.ActionConflicted {
+			pr.Action = a
+		}
 		// StatusChanged is computed centrally in classifyOne from the
 		// prior/fresh signature diff (TDD 9.1) — this carried-forward record
 		// reproduces the prior stored disposition field-for-field by
@@ -275,14 +282,14 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// surfaces even when the model couldn't be verified: prefer it over the
 		// meaningless raw-flag fallback for a submitter PR. The row stays
 		// unverified because its disposition was not model-judged.
-		if submitterFeedbackPending(pr) {
-			pr.Action = model.ActionReviewFeedback
+		if a, ok := submitterFeedbackAction(pr); ok {
+			pr.Action = a
 		}
 		// A merge-blocked PR (an unmet branch-protection rule) is a hard
 		// GitHub fact distinct from a conflict; checked before conflicted so
 		// conflicted still wins when both somehow hold (the harder blocker,
 		// same precedence as the verified path).
-		if submitterMergeBlocked(pr) && pr.Action != model.ActionReviewFeedback {
+		if submitterMergeBlocked(pr) && !authorOwesFeedback(pr.Action) {
 			pr.Action = model.ActionMergeBlocked
 		}
 		// A merge conflict is the harder blocker, so it wins over pending
@@ -388,8 +395,8 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// suggests the ball is elsewhere when it is with the author (TDD 4.9). This
 	// is what puts the PR in the submitter "Action Needed" reckoning
 	// (render ballWithUs).
-	if pr.Bucket == model.BucketOpen && submitterFeedbackPending(pr) {
-		pr.Action = model.ActionReviewFeedback
+	if a, ok := submitterFeedbackAction(pr); pr.Bucket == model.BucketOpen && ok {
+		pr.Action = a
 	}
 
 	// Deterministic merge-blocked override (submitter only). GitHub's own
@@ -404,7 +411,7 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// clears the block, and a reviewer left pending alongside the block would
 	// send the row to Awaiting Review, hiding concrete feedback the author
 	// owes an answer to (TDD 4.7a).
-	if pr.Bucket == model.BucketOpen && submitterMergeBlocked(pr) && pr.Action != model.ActionReviewFeedback {
+	if pr.Bucket == model.BucketOpen && submitterMergeBlocked(pr) && !authorOwesFeedback(pr.Action) {
 		pr.Action = model.ActionMergeBlocked
 	}
 
@@ -482,13 +489,28 @@ func demoteReviewerAwaitingReview(pr *model.PR) {
 	}
 }
 
-// submitterFeedbackPending reports whether pr is a submitter-authored PR with
-// unresolved review threads. This is the deterministic condition for the
-// review-feedback action: a hard fact, submitter-scoped (unresolved comments on
-// a PR the operator only reviews are the other author's to answer), and counted
-// excluding outdated threads, which point at already-rewritten lines.
-func submitterFeedbackPending(pr model.PR) bool {
-	return pr.Role == model.RoleSubmitter && (pr.UnresolvedThreads > 0 || pr.ChangesRequested)
+// authorOwesFeedback reports whether a is an action that already says the
+// author owes a reply to reviewers, which the merge-blocked override must not
+// replace (TDD 4.7a).
+func authorOwesFeedback(a model.Action) bool {
+	return a == model.ActionReviewFeedback || a == model.ActionChangesRequested
+}
+
+// submitterFeedbackAction returns the deterministic action for a submitter PR
+// that owes reviewers a reply: review_feedback while unresolved threads exist,
+// else changes_requested for a standing changes-requested verdict with every
+// thread resolved. The two are kept apart so the rendered note never claims
+// unresolved feedback that does not exist.
+func submitterFeedbackAction(pr model.PR) (model.Action, bool) {
+	switch {
+	case pr.Role != model.RoleSubmitter:
+		return "", false
+	case pr.UnresolvedThreads > 0:
+		return model.ActionReviewFeedback, true
+	case pr.ChangesRequested:
+		return model.ActionChangesRequested, true
+	}
+	return "", false
 }
 
 // submitterCIFailing reports whether pr is a submitter-authored PR whose head
