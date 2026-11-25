@@ -355,10 +355,10 @@ func TestStaleIssuesSortByLastActivity(t *testing.T) {
 
 func TestStaleIssueTableShape(t *testing.T) {
 	md := Render(nil, sampleIssues(), nil, "x", issueNow)
-	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Reason |") {
+	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Action | Reason |") {
 		t.Errorf("stale issue table header missing or wrong shape\n%s", md)
 	}
-	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Status |") {
+	if !strings.Contains(md, "| Repo | Issue | Title | Created | Age | Updated | Action | Status |") {
 		t.Errorf("active issue table header missing the Updated column\n%s", md)
 	}
 }
@@ -368,4 +368,25 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// Open and stale issue tables carry an Action column with the deterministic
+// disposition; closed issue tables do not (TDD 8.6).
+func TestIssueActionColumn(t *testing.T) {
+	cases := map[model.IssueAction]string{
+		model.IssueActionAwaitingResponse:     "⏳ Awaiting us",
+		model.IssueActionAwaitingOthers:       "💤 Awaiting others",
+		model.IssueActionTriage:               "🆕 Triage",
+		model.IssueActionResolvedPendingClose: "✅ Resolved",
+		"":                                    "—",
+	}
+	for a, want := range cases {
+		if got := issueActionCell(model.Issue{Action: a}); got != want {
+			t.Errorf("action %q: cell = %q, want %q", a, got, want)
+		}
+	}
+	md := Render(nil, sampleIssues(), nil, "x", issueNow)
+	if !strings.Contains(md, "| Repo | Issue | Title | Closed | Outcome | Notes |") || strings.Contains(md, "Closed | Action") {
+		t.Errorf("closed issue table must not gain an Action column\n%s", md)
+	}
 }

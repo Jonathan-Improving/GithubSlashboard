@@ -973,6 +973,12 @@ and an issue with no conversation is never sent to the model.
 - **And** the stale and closed sections are each split by role, so an archived
   issue still shows whether the operator opened it or merely took part; the two
   active sections are already per-role, so no table needs a Role column
+- **And** the active and stale tables carry an Action column showing the issue's
+  disposition as an emoji and a one- or two-word label (awaiting us, awaiting
+  others, triage, or resolved; a dash where none applies, as a stale issue has
+  none), so who
+  owes the next move reads at a glance beside the inferred note; the closed
+  tables do not, since a closed issue owes nothing
 - **And** each bucket appears in exactly one place: a closed issue only under
   Closed, a stale issue only under Stale, and neither in an active section
 - **And** the top-of-document summary reports issue counts alongside PR counts, so

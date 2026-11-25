@@ -92,13 +92,13 @@ func writeActiveIssueTable(b *strings.Builder, heading string, issues []model.Is
 		b.WriteString("_None._\n\n")
 		return
 	}
-	b.WriteString("| Repo | Issue | Title | Created | Age | Updated | Status |\n")
-	b.WriteString("|------|-------|-------|---------|-----|---------|--------|\n")
+	b.WriteString("| Repo | Issue | Title | Created | Age | Updated | Action | Status |\n")
+	b.WriteString("|------|-------|-------|---------|-----|---------|--------|--------|\n")
 	for _, i := range issues {
-		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
+		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			escapePipes(i.Repo), issueNumLink(i), escapePipes(i.Title),
 			i.Created.Format(dateLayout), age(now, i.Created),
-			updated(now, i.LastActivity), issueStatusCell(i)))
+			updated(now, i.LastActivity), issueActionCell(i), issueStatusCell(i)))
 	}
 	b.WriteString("\n")
 }
@@ -112,13 +112,13 @@ func writeStaleIssueTable(b *strings.Builder, heading string, issues []model.Iss
 		b.WriteString("_None._\n\n")
 		return
 	}
-	b.WriteString("| Repo | Issue | Title | Created | Age | Updated | Reason |\n")
-	b.WriteString("|------|-------|-------|---------|-----|---------|--------|\n")
+	b.WriteString("| Repo | Issue | Title | Created | Age | Updated | Action | Reason |\n")
+	b.WriteString("|------|-------|-------|---------|-----|---------|--------|--------|\n")
 	for _, i := range issues {
-		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
+		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			escapePipes(i.Repo), issueNumLink(i), escapePipes(i.Title),
 			i.Created.Format(dateLayout), age(now, i.Created),
-			updated(now, i.LastActivity), issueNoteCell(i)))
+			updated(now, i.LastActivity), issueActionCell(i), issueNoteCell(i)))
 	}
 	b.WriteString("\n")
 }
@@ -176,6 +176,24 @@ func issueStatusCell(i model.Issue) string {
 		note += " ⚠️ unverified"
 	}
 	return withIssuePriority(i, note)
+}
+
+// issueActionCell renders the Action column of an open or stale issue table:
+// the deterministic disposition as an emoji and a one- or two-word label, so
+// who owes the next move reads at a glance. An issue with no action
+// (a stale issue has none: nothing is awaited) renders a dash.
+func issueActionCell(i model.Issue) string {
+	switch i.Action {
+	case model.IssueActionAwaitingResponse:
+		return markIssueBallWithUs + " Awaiting us"
+	case model.IssueActionAwaitingOthers:
+		return "💤 Awaiting others"
+	case model.IssueActionTriage:
+		return "🆕 Triage"
+	case model.IssueActionResolvedPendingClose:
+		return "✅ Resolved"
+	}
+	return "—"
 }
 
 // issueActionLabel renders an issue action as human-readable prose for a row
