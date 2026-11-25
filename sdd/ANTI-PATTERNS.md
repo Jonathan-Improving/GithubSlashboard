@@ -21,6 +21,8 @@ quirks that would bite any kiro-cli project are surfaced to the operator instead
 | 13 | A notification predicate narrower than the item's status notifies silently-never | Medium |
 | 14 | A store edit made while a pre-lock run is in flight is silently clobbered | Low |
 | 15 | Hiding a tool from an MCP client by changing the list after it connected | Medium |
+| 16 | A changed deterministic rule cannot reach rows served from the unchanged-input cache | Medium |
+| 17 | Reusing one action for a second fact leaks its rendered claim onto rows it is false for | Medium |
 
 ## 1. Sending input to an interactive harness without turn synchronization
 
@@ -673,3 +675,57 @@ calling, not with a client written to match the server's design.
 attempt and an Ollama call, adding 15 to 40 seconds to each firing run, and the
 summary wording came from the fallback model. Nothing was lost, because the
 fallback covered it, which is why it went unnoticed. Severity: Medium.
+
+---
+
+## 16. A changed deterministic rule cannot reach rows served from the unchanged-input cache
+
+**Symptom**: After a fix to how an authored PR's disposition is derived was built,
+installed and run, the rows it was meant to correct kept their old label. The run
+was clean, the logs showed no error, and the document still carried the previous
+run's wording on exactly the PRs the fix targeted.
+
+**What was tried**:
+- Confirmed the new binary was the one installed and that the run used it.
+- Re-queried GitHub live to check the facts the rule reads — they were right.
+- Read the cache-hit path in classification.
+
+**Root cause**: An open PR whose fingerprint matches its stored one skips both the
+provider call and the deterministic overrides, and copies the stored action
+verbatim. The fingerprint hashes the rule's *inputs*; a change to the rule itself
+alters no input, so the hash is identical and every cached row is served stale
+until something unrelated moves it. The same cache is why a rule that adds a *new*
+input must fold it into the fingerprint (only when set, so unaffected PRs keep
+their hash and are not needlessly re-judged).
+
+**Resolution**: Any deterministic disposition derived from hard GitHub facts is
+re-derived on the cache-hit path as well, not only on the judged path. When
+changing such a rule, test the cached path explicitly — a test that classifies a
+fresh PR passes while the deployed rows stay wrong. Severity: Medium (silent; the
+fix looks deployed and is not).
+
+
+---
+
+## 17. Reusing one action for a second fact leaks its rendered claim onto rows it is false for
+
+**Symptom**: Rows in "Awaiting Our Action" read "unresolved review feedback —"
+on PRs the operator had checked by hand and found to have no unresolved feedback
+at all.
+
+**What was tried**:
+- Queried the review threads live for each flagged PR — zero unresolved.
+- Suspected the threads had been resolved after the run, which the timing allowed.
+
+**Root cause**: A standing changes-requested verdict was made to reuse the
+`review_feedback` action so it would land in the author's table for free. That
+action's renderer prefixes its note with the claim that unresolved feedback
+exists, which is true of the fact the action was named for and false of the new
+one. Placement and wording are both driven by the action, so borrowing an action
+for a placement borrows its sentence too.
+
+**Resolution**: One action per fact. The verdict got its own `changes_requested`
+action, which places the row identically and carries no unresolved-feedback claim.
+Before pointing a new condition at an existing action, read every place that
+renders or sorts by it. Severity: Medium (a false statement in the one place the
+operator trusts).
