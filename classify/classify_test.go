@@ -449,14 +449,14 @@ func TestMergeBlockedSurfacesWhenUnverified(t *testing.T) {
 	}
 }
 
-func TestMergeBlockedWinsOverReviewFeedback(t *testing.T) {
+func TestReviewFeedbackWinsOverMergeBlocked(t *testing.T) {
 	now := time.Now()
 	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting","emoji":"⏳"}`, now)
 	pr := model.PR{Repo: "o/n", Number: 24, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
 		Created: now, LastActivity: now, UnresolvedThreads: 3, Mergeable: trueBool(), MergeableState: "blocked"}
 	got := c.classifyOne(context.Background(), pr)
-	if got.Action != model.ActionMergeBlocked {
-		t.Errorf("action = %q, want merge_blocked to win over review_feedback", got.Action)
+	if got.Action != model.ActionReviewFeedback {
+		t.Errorf("action = %q, want review_feedback to win over merge_blocked (TDD 4.7a)", got.Action)
 	}
 }
 
@@ -970,5 +970,39 @@ func TestStatusChangedFalseOnFirstSeenPR(t *testing.T) {
 	got := c.classifyOne(context.Background(), fresh)
 	if got.StatusChanged {
 		t.Error("a first-seen PR has no prior bucket to transition from and must not set StatusChanged")
+	}
+}
+
+// Unresolved review threads outrank the merge-blocked override (TDD 4.7a): a
+// blocked PR with a pending reviewer must still reach Awaiting Our Action
+// through its review_feedback action, not be hidden behind merge_blocked.
+func TestMergeBlockedDoesNotMaskReviewFeedback(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"reviewer requested changes","emoji":"📝"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 21, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked",
+		UnresolvedThreads: 3, PendingReviewers: true}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action != model.ActionReviewFeedback {
+		t.Errorf("action = %q, want review_feedback", got.Action)
+	}
+}
+
+// A standing CHANGES_REQUESTED decision is the author's move even with every
+// thread resolved and a reviewer pending on a blocked PR (TDD 4.7a).
+func TestChangesRequestedDecisionIsFeedbackPending(t *testing.T) {
+	now := time.Now()
+	c := testClassifier(`{"bucket":"open","action":"awaiting_review","priority":"neutral","companion":"waiting on re-review","emoji":"⏳"}`, now)
+	pr := model.PR{Repo: "o/n", Number: 25, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+		Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked",
+		ChangesRequested: true, PendingReviewers: true}
+	got := c.classifyOne(context.Background(), pr)
+	if got.Action != model.ActionReviewFeedback {
+		t.Errorf("action = %q, want review_feedback", got.Action)
+	}
+	before := fingerprint(pr)
+	pr.ChangesRequested = false
+	if fingerprint(pr) == before {
+		t.Error("fingerprint must change when ChangesRequested flips")
 	}
 }

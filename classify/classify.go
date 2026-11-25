@@ -282,7 +282,7 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 		// GitHub fact distinct from a conflict; checked before conflicted so
 		// conflicted still wins when both somehow hold (the harder blocker,
 		// same precedence as the verified path).
-		if submitterMergeBlocked(pr) {
+		if submitterMergeBlocked(pr) && pr.Action != model.ActionReviewFeedback {
 			pr.Action = model.ActionMergeBlocked
 		}
 		// A merge conflict is the harder blocker, so it wins over pending
@@ -399,7 +399,12 @@ func (c *Classifier) classifyOpen(ctx context.Context, pr model.PR) model.PR {
 	// mutually exclusive states GitHub reports), so it is applied before the
 	// conflicted check below: if a PR is somehow both, conflicted still wins as
 	// the harder blocker.
-	if pr.Bucket == model.BucketOpen && submitterMergeBlocked(pr) {
+	//
+	// Unresolved review threads outrank it: "blocked" does not say whose move
+	// clears the block, and a reviewer left pending alongside the block would
+	// send the row to Awaiting Review, hiding concrete feedback the author
+	// owes an answer to (TDD 4.7a).
+	if pr.Bucket == model.BucketOpen && submitterMergeBlocked(pr) && pr.Action != model.ActionReviewFeedback {
 		pr.Action = model.ActionMergeBlocked
 	}
 
@@ -483,7 +488,7 @@ func demoteReviewerAwaitingReview(pr *model.PR) {
 // a PR the operator only reviews are the other author's to answer), and counted
 // excluding outdated threads, which point at already-rewritten lines.
 func submitterFeedbackPending(pr model.PR) bool {
-	return pr.Role == model.RoleSubmitter && pr.UnresolvedThreads > 0
+	return pr.Role == model.RoleSubmitter && (pr.UnresolvedThreads > 0 || pr.ChangesRequested)
 }
 
 // submitterCIFailing reports whether pr is a submitter-authored PR whose head
@@ -546,6 +551,11 @@ func fingerprintWith(pr model.PR, mergeableFlag *bool, state string) string {
 	fmt.Fprintf(h, "%s|%s|%s|%t|%d|%s|%s|%t",
 		last.Timestamp.UTC().Format(time.RFC3339Nano), last.Kind, last.Text,
 		pr.CIFailing, pr.UnresolvedThreads, mergeable, state, pr.ReviewRequested)
+	// Appended only when set, so every PR without a standing changes-requested
+	// verdict keeps its existing fingerprint and is not needlessly re-judged.
+	if pr.ChangesRequested {
+		fmt.Fprint(h, "|changes_requested")
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 

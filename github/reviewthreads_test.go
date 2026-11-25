@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	gh "github.com/google/go-github/v66/github"
+
 	"github.com/Jonathan-Improving/githubslashboard/model"
 )
 
@@ -108,5 +110,28 @@ func TestSummarizeReviewDecisionNilWhenAbsent(t *testing.T) {
 	}
 	if ev := summarizeReviewDecision("SOMETHING_NEW", time.Now()); ev != nil {
 		t.Errorf("expected nil for unknown decision, got %+v", ev)
+	}
+}
+
+func TestStandingChangesRequested(t *testing.T) {
+	rv := func(login, state string) *gh.PullRequestReview {
+		return &gh.PullRequestReview{User: &gh.User{Login: gh.String(login)}, State: gh.String(state)}
+	}
+	cases := []struct {
+		name    string
+		reviews []*gh.PullRequestReview
+		want    bool
+	}{
+		{"standing", []*gh.PullRequestReview{rv("a", "CHANGES_REQUESTED")}, true},
+		{"later comment does not lift it", []*gh.PullRequestReview{rv("a", "CHANGES_REQUESTED"), rv("a", "COMMENTED")}, true},
+		{"later approval lifts it", []*gh.PullRequestReview{rv("a", "CHANGES_REQUESTED"), rv("a", "APPROVED")}, false},
+		{"dismissed lifts it", []*gh.PullRequestReview{rv("a", "CHANGES_REQUESTED"), rv("a", "DISMISSED")}, false},
+		{"any reviewer", []*gh.PullRequestReview{rv("a", "APPROVED"), rv("b", "CHANGES_REQUESTED")}, true},
+		{"author's own is ignored", []*gh.PullRequestReview{rv("me", "CHANGES_REQUESTED")}, false},
+	}
+	for _, tc := range cases {
+		if got := standingChangesRequested(tc.reviews, "me"); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

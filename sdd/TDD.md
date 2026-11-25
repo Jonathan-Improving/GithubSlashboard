@@ -407,6 +407,18 @@ reference them by name.
   (⏳ pending-not-us rather than 🔄 back-and-forth) — the "blocked from
   merging" note text itself is unchanged either way, since it remains a true
   fact regardless of whose move it is
+- **And** a standing changes-requested verdict from any reviewer counts as
+  feedback pending exactly as unresolved threads do (TDD 4.9): GitHub's overall
+  decision is `CHANGES_REQUESTED`, or any non-author reviewer's latest approving,
+  changing or dismissing review is a changes-request (a later plain comment does
+  not lift it, and the decision alone is not enough because repositories that do
+  not require reviews never report it). The verdict holds until that reviewer
+  re-reviews or is dismissed, even when every thread is resolved; a false
+  positive costs the operator one look at the PR, whereas a miss leaves it
+  ignored by both sides
+- **And** unresolved review threads (TDD 4.9) outrank it: a blocked PR that also
+  has unresolved, non-outdated threads keeps Review Feedback, because the
+  author owes those threads an answer whether or not a reviewer is also pending
 - **Note** because the block is a hard fact rather than a judgment, it surfaces
   even on a row that fell to `unverified`; a model-inferred `merge_ready` sitting
   on a row GitHub itself reports as blocked was the concrete defect motivating

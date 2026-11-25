@@ -88,6 +88,13 @@ type PR struct {
 	// persisted.
 	UnresolvedThreads int `yaml:"-" json:"-"`
 
+	// ChangesRequested is true when GitHub's overall review decision for the PR
+	// is CHANGES_REQUESTED: a reviewer's standing verdict that the author owes
+	// the next move, which holds even when every thread has been resolved (the
+	// verdict stays until that reviewer re-reviews or is dismissed). Open PRs
+	// only; recomputed each run; not persisted.
+	ChangesRequested bool `yaml:"-" json:"-"`
+
 	// PendingReviewers is true when GitHub reports one or more reviewers (or
 	// teams) currently requested on this PR who have not yet submitted a
 	// review. It comes from the same single-PR Get call that already supplies

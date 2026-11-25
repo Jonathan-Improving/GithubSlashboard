@@ -417,7 +417,7 @@ func (c *Client) attachEventTrail(ctx context.Context, p *model.PR) error {
 	}
 	events = append(events, comments...)
 
-	reviews, err := c.collectReviews(ctx, owner, name, p.Number)
+	reviews, changesRequested, err := c.collectReviews(ctx, owner, name, p.Number, pull.GetUser().GetLogin())
 	if err != nil {
 		return err
 	}
@@ -459,6 +459,7 @@ func (c *Client) attachEventTrail(ctx context.Context, p *model.PR) error {
 			return err
 		}
 		p.UnresolvedThreads = countUnresolved(res.Threads)
+		p.ChangesRequested = changesRequested || res.Decision == "CHANGES_REQUESTED"
 		if ev := summarizeReviewThreads(res.Threads); ev != nil {
 			events = append(events, *ev)
 		}
@@ -504,14 +505,43 @@ func (c *Client) collectComments(ctx context.Context, owner, name string, number
 	return out, nil
 }
 
-func (c *Client) collectReviews(ctx context.Context, owner, name string, number int) ([]model.Event, error) {
+// standingChangesRequested reports whether any reviewer other than the PR's
+// author currently stands on a CHANGES_REQUESTED verdict: that reviewer's most
+// recent verdict-bearing review (approved, changes requested, or dismissed) is
+// changes-requested. A later plain comment does not lift the verdict on GitHub,
+// so COMMENTED and PENDING reviews are ignored. Unlike GitHub's overall review
+// decision, this holds on repositories that do not require reviews, where the
+// decision is never reported.
+func standingChangesRequested(reviews []*gh.PullRequestReview, author string) bool {
+	latest := map[string]string{}
+	for _, rv := range reviews { // ListReviews is chronological
+		login := rv.GetUser().GetLogin()
+		if login == "" || strings.EqualFold(login, author) {
+			continue
+		}
+		switch s := strings.ToUpper(rv.GetState()); s {
+		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+			latest[login] = s
+		}
+	}
+	for _, s := range latest {
+		if s == "CHANGES_REQUESTED" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) collectReviews(ctx context.Context, owner, name string, number int, author string) ([]model.Event, bool, error) {
 	opts := &gh.ListOptions{PerPage: 100}
 	var out []model.Event
+	var all []*gh.PullRequestReview
 	for {
 		reviews, resp, err := c.rest.PullRequests.ListReviews(ctx, owner, name, number, opts)
 		if err != nil {
-			return nil, fmt.Errorf("list reviews: %w", err)
+			return nil, false, fmt.Errorf("list reviews: %w", err)
 		}
+		all = append(all, reviews...)
 		for _, rv := range reviews {
 			out = append(out, model.Event{
 				Timestamp: rv.GetSubmittedAt().Time,
@@ -526,7 +556,7 @@ func (c *Client) collectReviews(ctx context.Context, owner, name string, number 
 		}
 		opts.Page = resp.NextPage
 	}
-	return out, nil
+	return out, standingChangesRequested(all, author), nil
 }
 
 // collectCIStatus fetches the check-runs on the given head SHA and summarizes
