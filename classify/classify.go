@@ -490,10 +490,14 @@ func demoteReviewerAwaitingReview(pr *model.PR) {
 }
 
 // authorOwesFeedback reports whether a is an action that already says the
-// author owes a reply to reviewers, which the merge-blocked override must not
-// replace (TDD 4.7a).
+// author owes the next move to reviewers — feedback to answer, changes to make,
+// or a question the model read as awaiting the author — which the merge-blocked
+// override must not replace (TDD 4.7a): "blocked" does not say whose move it is,
+// and a still-pending reviewer would otherwise bury the row under Awaiting
+// Review.
 func authorOwesFeedback(a model.Action) bool {
-	return a == model.ActionReviewFeedback || a == model.ActionChangesRequested
+	return a == model.ActionReviewFeedback || a == model.ActionChangesRequested ||
+		a == model.ActionAuthorActive
 }
 
 // submitterFeedbackAction returns the deterministic action for a submitter PR
@@ -577,6 +581,12 @@ func fingerprintWith(pr model.PR, mergeableFlag *bool, state string) string {
 	// verdict keeps its existing fingerprint and is not needlessly re-judged.
 	if pr.ChangesRequested {
 		fmt.Fprint(h, "|changes_requested")
+	}
+	// A blocked submitter PR once had the model's verdict discarded by the
+	// merge-blocked override, so its cached action cannot be trusted; this
+	// one-time salt re-judges it under the current precedence, then is stable.
+	if pr.Role == model.RoleSubmitter && state == "blocked" {
+		fmt.Fprint(h, "|blocked-precedence-v2")
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

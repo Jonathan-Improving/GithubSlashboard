@@ -407,6 +407,11 @@ reference them by name.
   (⏳ pending-not-us rather than 🔄 back-and-forth) — the "blocked from
   merging" note text itself is unchanged either way, since it remains a true
   fact regardless of whose move it is
+- **And** a model-inferred action saying the author owes the next move (changes
+  requested, or the author active — e.g. a reviewer asked the author a question)
+  likewise outranks it, since a reviewer left pending beside the block would
+  otherwise hide the row from `Awaiting Our Action`; a model-inferred
+  `merge_ready` does not
 - **And** the author's outstanding feedback (TDD 4.9) outranks it: a blocked PR
   that also has unresolved, non-outdated threads or a standing changes-requested
   verdict keeps its feedback action, because the author owes an answer whether

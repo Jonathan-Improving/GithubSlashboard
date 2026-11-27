@@ -1023,3 +1023,21 @@ func TestCarriedActionRederivesFeedbackDisposition(t *testing.T) {
 		t.Errorf("action = %q, want changes_requested", got.Action)
 	}
 }
+
+// A blocked PR whose model verdict says the author owes the next move (e.g. a
+// reviewer asked the author a question) keeps that verdict even with a reviewer
+// still pending (TDD 4.7a); merge_ready is still overridden.
+func TestMergeBlockedKeepsAuthorActiveVerdict(t *testing.T) {
+	now := time.Now()
+	for verdict, want := range map[string]model.Action{
+		"author_active": model.ActionAuthorActive,
+		"merge_ready":   model.ActionMergeBlocked,
+	} {
+		c := testClassifier(`{"bucket":"open","action":"`+verdict+`","priority":"neutral","companion":"reviewer asked a question","emoji":"💬"}`, now)
+		pr := model.PR{Repo: "o/n", Number: 27, GitHubState: model.GitHubStateOpen, Role: model.RoleSubmitter,
+			Created: now, LastActivity: now, Mergeable: trueBool(), MergeableState: "blocked", PendingReviewers: true}
+		if got := c.classifyOne(context.Background(), pr); got.Action != want {
+			t.Errorf("verdict %s: action = %q, want %q", verdict, got.Action, want)
+		}
+	}
+}
